@@ -34,6 +34,7 @@ export const GET: RequestHandler = async ({ url }) => {
 // --------------------------------------------------
 export const POST: RequestHandler = async ({ request }) => {
   const body = await request.json().catch(() => null);
+  console.log("📥 Webhook POST recibido:", body); 
   if (!body) return json({ ok: false, error: 'Invalid JSON' });
 
   if (body.object !== 'whatsapp_business_account') {
@@ -107,12 +108,13 @@ export const POST: RequestHandler = async ({ request }) => {
   // --------------------------------------------------
   await logConversationEvent(ctx, botResponse, body);
 
-  // --------------------------------------------------
+    // --------------------------------------------------
   // Responder al usuario via WhatsApp Cloud API
   // --------------------------------------------------
   if (accessToken && phoneId) {
     try {
-      const waRes = await fetch(
+      // 1) Enviar el texto principal
+      const textRes = await fetch(
         `https://graph.facebook.com/v20.0/${phoneId}/messages`,
         {
           method: 'POST',
@@ -129,17 +131,53 @@ export const POST: RequestHandler = async ({ request }) => {
         }
       );
 
-      const waJson = await waRes.json().catch(() => ({}));
-
-      if (!waRes.ok) {
-        console.error('❌ Error enviando WhatsApp:', waJson);
+      const textJson = await textRes.json().catch(() => ({}));
+      if (!textRes.ok) {
+        console.error('❌ Error enviando texto a WhatsApp:', textJson);
       } else {
-        console.log('✅ Respuesta enviada a WhatsApp:', waJson);
+        console.log('✅ Texto enviado a WhatsApp:', textJson);
+      }
+
+      // 2) Si el motor devolvió media, enviar imágenes
+      if (botResponse.media?.length) {
+        for (const m of botResponse.media) {
+          if (m.type !== 'image') continue;
+
+          console.log('📸 Enviando imagen a WhatsApp:', m.url);
+
+          const imgRes = await fetch(
+            `https://graph.facebook.com/v20.0/${phoneId}/messages`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${accessToken}`
+              },
+              body: JSON.stringify({
+                messaging_product: 'whatsapp',
+                to: from,
+                type: 'image',
+                image: {
+                  link: m.url,
+                  caption: m.caption
+                }
+              })
+            }
+          );
+
+          const imgJson = await imgRes.json().catch(() => ({}));
+          if (!imgRes.ok) {
+            console.error('❌ Error enviando imagen a WhatsApp:', imgJson);
+          } else {
+            console.log('✅ Imagen enviada a WhatsApp:', imgJson);
+          }
+        }
       }
     } catch (err) {
       console.error('❌ Error de red con WhatsApp Cloud API:', err);
     }
   }
+
 
   // --------------------------------------------------
   // Enviar OK a Meta rápidamente

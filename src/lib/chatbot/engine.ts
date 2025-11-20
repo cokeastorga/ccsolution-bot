@@ -1,6 +1,11 @@
 // src/lib/chatbot/engine.ts
+import {
+  buildMenuResumen,
+  buscarProductoPorTexto,
+  formatearDetalleProducto
+} from '$lib/chatbot/catalog/productos';
+import { buildImageUrl } from '$lib/chatbot/utils/images';
 
-import { buildMenuResumen } from '$lib/chatbot/catalog/productos';
 
 
 export type Channel = 'whatsapp' | 'web';
@@ -59,6 +64,12 @@ export interface BotResponse {
   needsHuman?: boolean;
   /** Datos extra para logs */
   meta?: Record<string, unknown>;
+
+   media?: Array<{
+    type: 'image';
+    url: string;
+    caption?: string;
+  }>;
 }
 
 /**
@@ -282,18 +293,52 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
       break;
     }
 
-    case 'order_start': {
+        case 'order_start': {
+      // 1) Intentamos detectar si el usuario ya mencionó una torta específica
+      const producto = buscarProductoPorTexto(ctx.text);
+
+      if (producto) {
+        const imageUrl = buildImageUrl(producto.imagen);
+
+        reply = formatearDetalleProducto(producto);
+        nextState = 'collecting_order_details';
+
+        return {
+          reply,
+          intent,
+          nextState,
+          needsHuman,
+          meta: {
+            ...((ctx.metadata ?? {}) as any),
+            productoId: producto.id,
+            channel: ctx.channel,
+            locale
+          },
+          media: [
+            {
+              type: 'image',
+              url: imageUrl,
+              caption: producto.nombre
+            }
+          ]
+        };
+      }
+
+      // 2) Si aún no se reconoce un producto, seguimos con el flujo genérico
       reply =
         `Perfecto, iniciemos tu pedido 🧁` +
         lineBreak +
         `¿Qué te gustaría pedir? Puedes decir algo como:` +
         lineBreak +
-        `• "Kuchen de frutilla para 8 personas"` +
+        `• "Torta Selva Negra para 20 personas"` +
         lineBreak +
-        `• "Torta de hojarasca para el viernes"`;
+        `• "Torta Mil Hojas para el viernes"` +
+        lineBreak +
+        `• "Torta de Frambuesa para 12 personas"`;
       nextState = 'collecting_order_details';
       break;
     }
+
 
     case 'order_status': {
       reply =
