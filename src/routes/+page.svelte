@@ -12,12 +12,13 @@
       Tu nueva aplicación está lista. Tailwind CSS está funcionando con animaciones suaves y diseño responsivo.
     </p>
 
-    <a
-      href="/login"
-      sveltekit:prefetch
-      class="bg-white text-indigo-700 font-semibold px-6 py-3 rounded-full shadow-xl hover:shadow-2xl hover:scale-105 transition-transform duration-300 ease-in-out">
-      Comenzar
-    </a>
+  <a
+  href="/login"
+  data-sveltekit-preload-data
+  class="bg-white text-indigo-700 font-semibold px-6 py-3 rounded-full shadow-xl hover:shadow-2xl hover:scale-105 transition-transform duration-300 ease-in-out">
+  Comenzar
+</a>
+
   </div>
 </section>
 
