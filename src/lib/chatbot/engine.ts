@@ -1,5 +1,8 @@
 // src/lib/chatbot/engine.ts
 
+import { buildMenuResumen } from '$lib/chatbot/catalog/productos';
+
+
 export type Channel = 'whatsapp' | 'web';
 
 export type IntentId =
@@ -84,7 +87,7 @@ export function detectIntent(
 
   // Si ya venimos en un flujo de pedido, favorecemos seguir en ese contexto
   if (previousState === 'collecting_order_details') {
-    if (hasAny(['confirmar', 'listo', 'ok', 'estaria bien'])) {
+    if (hasAny(['confirmar', 'listo', 'ok', 'estaria bien','ya'])) {
       return {
         id: 'order_start',
         confidence: 0.95,
@@ -107,7 +110,8 @@ export function detectIntent(
       'buen dia',
       'buenos dias',
       'buenas tardes',
-      'buenas noches'
+      'buenas noches',
+      'alo'
     ])
   ) {
     return {
@@ -172,7 +176,7 @@ export function detectIntent(
   }
 
   // Horarios
-  if (hasAny(['horario', 'abren', 'cierran', 'a que hora', 'atienden'])) {
+  if (hasAny(['horario', 'abren', 'cierran', 'a que hora', 'atienden', 'horarios'])) {
     return {
       id: 'faq_hours',
       confidence: 0.88,
@@ -199,7 +203,8 @@ export function detectIntent(
       'asesor',
       'ejecutivo',
       'persona real',
-      'atencion al cliente'
+      'atencion al cliente', 
+      'vendedor'
     ])
   ) {
     return {
@@ -237,7 +242,7 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
   const settings = (((ctx.metadata ?? {}) as any).settings ??
     {}) as SettingsMeta;
 
-  const businessName = settings.businessName ?? 'CC Solution Bot';
+  const businessName = settings.businessName ?? 'Delicias Porteñas';
 
   const lineBreak = isWhatsApp ? '\n' : '\n';
 
@@ -251,7 +256,9 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
         reply = settings.messages.welcome;
       } else {
         reply =
-          `¡Hola! 👋 Soy el asistente automático de ${businessName}.` +
+          `¡Hola! 👋 Soy Edu! el asistente virtual de ${businessName}.` +
+          lineBreak +
+          `Me encantan las Facturitas y los paseos por la Costanera` +
           lineBreak +
           `Puedo ayudarte a:` +
           lineBreak +
@@ -259,7 +266,8 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
           lineBreak +
           `• Consultar horarios o productos` +
           lineBreak +
-          `• Derivarte con una persona del equipo`;
+          `• Derivarte con una persona del equipo`+
+          `Respondeme de forma natural, estoy configurado para brindar una atencion personalizada.` ;
       }
       nextState = 'idle';
       break;
@@ -299,11 +307,13 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
     case 'faq_hours': {
       const h = settings.hours ?? {};
       reply =
+       ` ${businessName}.` +
+          lineBreak +
         `Nuestros horarios de atención son:` +
         lineBreak +
-        `🕒 Lunes a viernes: ${h.weekdays ?? '10:00 – 19:00'}` +
+        `🕒 Lunes a viernes: ${h.weekdays ?? '08:00 – 19:00'}` +
         lineBreak +
-        `🕒 Sábados: ${h.saturday ?? '10:00 – 14:00'}` +
+        `🕒 Sábados: ${h.saturday ?? '10:00 – 19:00'}` +
         lineBreak +
         `${
           h.sunday ??
@@ -313,20 +323,25 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
       break;
     }
 
-    case 'faq_menu': {
+       case 'faq_menu': {
+      const resumen = buildMenuResumen(4); // 4 productos por categoría, ajustable
+
       reply =
-        `Te comparto un resumen de nuestros productos principales 🍰` +
+        ` ${businessName}.` +
         lineBreak +
-        `• Kuchen artesanales` +
+        `Te comparto un resumen de nuestras tortas y productos 🍰` +
         lineBreak +
-        `• Tortas personalizadas` +
         lineBreak +
-        `• Postres individuales` +
+        resumen +
         lineBreak +
-        `Si quieres, dime qué te interesa y te ayudo a cotizar.`;
+        lineBreak +
+        `Si quieres, dime el *nombre de la torta* (por ejemplo: "Torta Selva Negra", "Torta Alpina" o "Torta Mil Hojas") y para cuántas personas, y te ayudo a cotizar.`;
+
       nextState = ctx.previousState ?? 'idle';
       break;
     }
+
+
 
     case 'handoff_human': {
       if (settings.messages?.handoff) {
@@ -351,7 +366,7 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
         reply =
           `¡Gracias por escribirnos! 🙌` +
           lineBreak +
-          `Si más adelante necesitas hacer un pedido o resolver una duda, puedes hablarme de nuevo cuando quieras.`;
+          `Si más adelante necesitas hacer un pedido o resolver una duda, puedes hablarme de nuevo cuando quieras, estaré aqui feliz de ayudarte.`;
       }
       nextState = 'ended';
       break;
