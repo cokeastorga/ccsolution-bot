@@ -40,9 +40,9 @@ export const defaultSettings: Settings = {
   defaultChannel: 'whatsapp',
   whatsapp: {
     enabled: true,
-    phoneNumberId: '',
-    accessToken: '',
-    verifyToken: '',
+    phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID ?? '',
+    accessToken: process.env.WHATSAPP_TOKEN ?? '',
+    verifyToken: process.env.WHATSAPP_VERIFY_TOKEN ?? '',
     notificationPhones: ''
   },
   hours: {
@@ -67,10 +67,11 @@ export const defaultSettings: Settings = {
     notifyEmail: ''
   },
   api: {
-    publicBaseUrl: '',
-    webhookSecret: ''
+    publicBaseUrl: process.env.PUBLIC_BASE_URL ?? '',
+    webhookSecret: process.env.WEBHOOK_SECRET ?? ''
   }
 };
+
 
 export async function getGlobalSettings(): Promise<Settings> {
   const ref = doc(db, 'settings', 'global');
