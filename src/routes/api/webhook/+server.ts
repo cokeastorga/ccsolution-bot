@@ -61,22 +61,29 @@ export const POST: RequestHandler = async ({ request }) => {
   const from = msg.from; // número del usuario
   const text = msg.text?.body ?? '';
   if (!text) return json({ ok: true, skip: 'Empty text' });
+  // --------------------------------------------------
+  // 📌 LEER CONFIG GLOBAL DESDE FIRESTORE (con fallback)
+  // --------------------------------------------------
+  let settings: any = { whatsapp: {} };
 
-  // --------------------------------------------------
-  // 📌 LEER CONFIG GLOBAL DESDE FIRESTORE
-  // --------------------------------------------------
-  const settings = await getGlobalSettings();
+  try {
+    settings = await getGlobalSettings();
+  } catch (err) {
+    console.error('❌ Error leyendo settings desde Firestore:', err);
+    // NO lanzamos el error: dejamos que el bot siga con env
+  }
 
   const accessToken =
-    settings.whatsapp.accessToken || process.env.WHATSAPP_TOKEN;
+    settings.whatsapp?.accessToken || process.env.WHATSAPP_TOKEN;
 
   const phoneId =
-    settings.whatsapp.phoneNumberId ||
+    settings.whatsapp?.phoneNumberId ||
     process.env.WHATSAPP_PHONE_NUMBER_ID;
 
   if (!accessToken || !phoneId) {
     console.error('❌ Falta Access Token o Phone Number ID');
   }
+
 
   // --------------------------------------------------
   // Construir el contexto para el motor

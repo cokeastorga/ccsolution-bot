@@ -73,67 +73,76 @@ export async function logConversationEvent(
   response: BotResponse,
   rawPayload?: unknown
 ): Promise<void> {
-  await ensureConversationExists(ctx);
+  try {
+    await ensureConversationExists(ctx);
 
-  const convRef = doc(db, 'conversations', ctx.conversationId);
-  const messagesRef = collection(convRef, 'messages');
+    const convRef = doc(db, 'conversations', ctx.conversationId);
+    const messagesRef = collection(convRef, 'messages');
 
-  const stateBefore = ctx.previousState ?? null;
-  const stateAfter = response.nextState ?? null;
+    const stateBefore = ctx.previousState ?? null;
+    const stateAfter = response.nextState ?? null;
 
-  // 1. Mensaje del usuario
-  await addDoc(messagesRef, {
-    from: 'user',
-    direction: 'in',
-    text: ctx.text,
-    intentId: null,
-    confidence: null,
-    stateBefore,
-    stateAfter,
-    createdAt: serverTimestamp()
-  } as MessageDoc);
+    // 1. Mensaje del usuario
+    await addDoc(messagesRef, {
+      from: 'user',
+      direction: 'in',
+      text: ctx.text,
+      intentId: null,
+      confidence: null,
+      stateBefore,
+      stateAfter,
+      createdAt: serverTimestamp(),
+      raw: rawPayload ?? null // opcional: guardar payload original del evento
+    } as MessageDoc & { raw?: unknown });
 
-  // 2. Mensaje del bot
-  await addDoc(messagesRef, {
-    from: 'bot',
-    direction: 'out',
-    text: response.reply,
-    intentId: response.intent.id,
-    confidence: response.intent.confidence,
-    stateBefore,
-    stateAfter,
-    createdAt: serverTimestamp()
-  } as MessageDoc);
+    // 2. Mensaje del bot
+    await addDoc(messagesRef, {
+      from: 'bot',
+      direction: 'out',
+      text: response.reply,
+      intentId: response.intent.id,
+      confidence: response.intent.confidence,
+      stateBefore,
+      stateAfter,
+      createdAt: serverTimestamp(),
+      media: response.media ?? null
+    } as MessageDoc & { media?: unknown });
 
-  // 3. Actualizar resumen de la conversación
-  const status: ConversationStatus =
-    stateAfter === 'ended'
-      ? 'closed'
-      : response.needsHuman
-      ? 'pending'
-      : 'open';
+    // 3. Actualizar resumen de la conversación
+    const status: ConversationStatus =
+      stateAfter === 'ended'
+        ? 'closed'
+        : response.needsHuman
+        ? 'pending'
+        : 'open';
 
-  const updateData: Partial<ConversationDoc> & {
-    updatedAt: unknown;
-    lastMessageAt: unknown;
-    lastMessageText: string;
-    lastIntentId: IntentId;
-    needsHuman: boolean;
-  } = {
-    status,
-    lastMessageAt: serverTimestamp(),
-    lastMessageText: response.reply,
-    lastIntentId: response.intent.id,
-    needsHuman: response.needsHuman ?? false,
-    updatedAt: serverTimestamp()
-  };
-
-  if (rawPayload) {
-    updateData.metadata = {
-      ...(ctx.metadata ?? {}),
-      raw: rawPayload as unknown
+    const updateData: Partial<ConversationDoc> & {
+      updatedAt: unknown;
+      lastMessageAt: unknown;
+      lastMessageText: string;
+      lastIntentId: IntentId;
+      needsHuman: boolean;
+    } = {
+      status,
+      lastMessageAt: serverTimestamp(),
+      lastMessageText: response.reply,
+      lastIntentId: response.intent.id,
+      needsHuman: response.needsHuman ?? false,
+      updatedAt: serverTimestamp()
     };
-  }
 
-  await updateDoc(convRef, updateData);
+    if (rawPayload) {
+      updateData.metadata = {
+        ...(ctx.metadata ?? {}),
+        raw: rawPayload as unknown
+      };
+    }
+
+    await updateDoc(convRef, updateData);
+
+    console.log('🗄️ Conversación registrada en Firestore:', ctx.conversationId);
+  } catch (err) {
+    console.error('❌ Error guardando conversación en Firestore:', err);
+    // IMPORTANTE: NO lanzar el error, para no romper el webhook
+  }
 }

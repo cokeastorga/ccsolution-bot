@@ -82,12 +82,13 @@ export const POST: RequestHandler = async ({ request }) => {
 
   const settings = await getGlobalSettings();
 
-  // Prioridad: si el usuario guardó token/phone ID en configuración, usar eso.
-  const phoneId =
-    settings.whatsapp.phoneNumberId || ENV_PHONE_ID;
+const accessToken =
+  settings.whatsapp?.accessToken || process.env.WHATSAPP_TOKEN;
 
-  const accessToken =
-    settings.whatsapp.accessToken || ENV_ACCESS_TOKEN;
+const phoneId =
+  settings.whatsapp?.phoneNumberId ||
+  process.env.WHATSAPP_PHONE_NUMBER_ID;
+
 
   if (!phoneId || !accessToken) {
     console.error('❌ Falta Phone Number ID o Access Token.');
