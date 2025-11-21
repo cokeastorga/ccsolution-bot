@@ -2,11 +2,16 @@
 import { env as publicEnv } from '$env/dynamic/public';
 
 export function buildImageUrl(relativePath: string): string {
+  // Base de la app
   const base =
-    (publicEnv.PUBLIC_APP_URL ?? 'https://ccsolutions-bot.vercel.app')
-      .replace(/\/$/, '');
+    publicEnv.PUBLIC_APP_URL?.replace(/\/$/, '') ??
+    'https://ccsolutions-bot.vercel.app'; // dominio correcto
 
-  const path = relativePath.startsWith('/') ? relativePath : `/${relativePath}`;
+  // Normalizar ruta interna
+  const path = relativePath.startsWith('/')
+    ? relativePath
+    : `/${relativePath}`;
 
+  // Construir URL final
   return `${base}${path}`;
 }
