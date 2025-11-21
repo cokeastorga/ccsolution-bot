@@ -494,7 +494,10 @@ export function detectIntent(
       'quiero una torta',
       'hacer un pedido',
       'quiero pedir',
-      'quisiera pedir'
+      'quisiera pedir',
+      'necesito pedir',
+      'quiero encargar',
+      'quisiera encargar'
     ])
   ) {
     return {
@@ -525,11 +528,13 @@ export function detectIntent(
   if (
     hasAny([
       'horario',
+      'horarios',
       'abren',
       'cierran',
       'a que hora',
       'atienden',
-      'horarios'
+      'apertura',
+      'cierre'
     ])
   ) {
     return {
@@ -539,12 +544,50 @@ export function detectIntent(
     };
   }
 
-  // Menú / carta / productos
-  if (hasAny(['menu', 'carta', 'productos', 'lista de precios', 'catalogo'])) {
+  // 🔥 Menú / carta / productos / "tortas que tienen"
+  const containsTortaPalabra =
+    normalized.includes('torta') || normalized.includes('tortas');
+
+  const containsPreguntaMenu = hasAny([
+    'menu',
+    'carta',
+    'productos',
+    'lista de precios',
+    'catalogo',
+    'catálogo',
+    'lista',
+    'variedades',
+    'opciones',
+    'catalogo de tortas',
+    'catalogo de productos',
+    'ver el menu',
+    'ver el menú',
+    'ver menu',
+    'ver catálogo',
+    'ver catalogo',
+    'ver productos',
+    'tortas disponibles',
+    'tipos de tortas',
+    'que tortas tienen',
+    'que tortas hay',
+    'que torta tienen',
+    'que torta hay',
+    'quiero ver las tortas',
+    'ver las tortas',
+    'mostrar tortas',
+    'muestrame las tortas',
+    'muéstrame las tortas'
+  ]);
+
+  if (
+    containsPreguntaMenu ||
+    (containsTortaPalabra &&
+      hasAny(['que', 'ver', 'mostrar', 'muestrame', 'muéstrame', 'hay', 'tienen']))
+  ) {
     return {
       id: 'faq_menu',
-      confidence: 0.88,
-      reason: 'Consulta de menú / catálogo detectada'
+      confidence: 0.93,
+      reason: 'Consulta de menú / tortas detectada'
     };
   }
 
@@ -557,7 +600,10 @@ export function detectIntent(
       'ejecutivo',
       'persona real',
       'atencion al cliente',
-      'vendedor'
+      'vendedor',
+      'encargado',
+      'dueño',
+      'duenio'
     ])
   ) {
     return {
@@ -583,6 +629,7 @@ export function detectIntent(
     reason: 'No se encontraron patrones claros; se usa fallback'
   };
 }
+
 
 /**
  * Construye el texto de respuesta según la intención y el contexto.
