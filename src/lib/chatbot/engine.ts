@@ -5,6 +5,8 @@ import {
   formatearDetalleProducto
 } from '$lib/chatbot/catalog/productos';
 import { buildImageUrl } from '$lib/chatbot/utils/images';
+import { aiUnderstand, type AiNLUResult } from '$lib/chatbot/aiUnderstanding';
+
 
 export type Channel = 'whatsapp' | 'web';
 
@@ -314,10 +316,28 @@ function buildProductoOrderResponse(
   locale: 'es' | 'en',
   lineBreak: string
 ): BotResponse {
-  const personas = extractPersonCount(ctx.text);
+  // ⬇️ Intentamos usar primero los slots de IA si existen
+  const aiSlots = (ctx.metadata as any)?.aiSlots as
+    | {
+        personas?: number;
+        deliveryMode?: DeliveryMode;
+        fechaIso?: string;
+      }
+    | undefined;
+
+  const personas =
+    aiSlots?.personas ?? extractPersonCount(ctx.text);
+
   const sizeKeyword = extractSizeKeyword(ctx.text);
-  const deliveryMode = extractDeliveryMode(ctx.text);
-  const dateInfo = extractDateInfo(ctx.text);
+
+  const deliveryMode =
+    aiSlots?.deliveryMode ?? extractDeliveryMode(ctx.text);
+
+  const dateInfoFromIa = aiSlots?.fechaIso
+    ? { raw: 'según IA', iso: aiSlots.fechaIso }
+    : null;
+
+  const dateInfo = dateInfoFromIa ?? extractDateInfo(ctx.text);
   const fechaLabel = formatFechaLabel(dateInfo);
 
   const imageUrl = buildImageUrl(producto.imagen);
@@ -473,7 +493,8 @@ export function detectIntent(
       'chau',
       'adios',
       'nos vemos',
-      'hasta luego'
+      'hasta luego',
+      'vale gracias'
     ])
   ) {
     return {
@@ -494,6 +515,7 @@ export function detectIntent(
       'quiero una torta',
       'hacer un pedido',
       'quiero pedir',
+      'quiero pedir una torta',
       'quisiera pedir',
       'necesito pedir',
       'quiero encargar',
@@ -534,7 +556,8 @@ export function detectIntent(
       'a que hora',
       'atienden',
       'apertura',
-      'cierre'
+      'cierre',
+      'hasta que hora atienden'
     ])
   ) {
     return {
@@ -630,7 +653,6 @@ export function detectIntent(
   };
 }
 
-
 /**
  * Construye el texto de respuesta según la intención y el contexto.
  * Aquí ya usamos los settings que vienen en ctx.metadata.settings.
@@ -656,9 +678,9 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
         reply = settings.messages.welcome;
       } else {
         reply =
-          `¡Hola! 👋 Soy Edu! el asistente virtual de ${businessName}.` +
+          `¡Hola! 👋 Soy Edu, el asistente virtual de ${businessName}.` +
           lineBreak +
-          `Me encantan las facturitas y los paseos por la Costanera` +
+          `Me encantan las facturitas y los paseos por la Costanera.` +
           lineBreak +
           `Puedo ayudarte a:` +
           lineBreak +
@@ -704,7 +726,7 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
         lineBreak +
         `• "Torta de Frambuesa para 12 personas"` +
         lineBreak +
-        `Y dime también si es para *retiro* o *delivery*.`;
+        `Y dime también si es para *retiro* y en qué *sucursal*.`; // ojo tilde
       nextState = 'collecting_order_details';
       break;
     }
@@ -721,9 +743,7 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
     case 'faq_hours': {
       const h = settings.hours ?? {};
       reply =
-        ` ${businessName}.` +
-        lineBreak +
-        `Nuestros horarios de atención son:` +
+        `Te cuento los horarios de ${businessName}:` +
         lineBreak +
         `🕒 Lunes a viernes: ${h.weekdays ?? '08:00 – 19:00'}` +
         lineBreak +
@@ -741,9 +761,7 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
       const resumen = buildMenuResumen(4); // 4 productos por categoría, ajustable
 
       reply =
-        ` ${businessName}.` +
-        lineBreak +
-        `Te comparto un resumen de nuestras tortas y productos 🍰` +
+        `Te comparto un resumen de nuestras tortas y productos de ${businessName} 🍰` +
         lineBreak +
         lineBreak +
         resumen +
@@ -820,10 +838,66 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
 
 /**
  * Función de alto nivel: recibe un contexto, detecta intención,
- * construye respuesta y deja todo listo para que el caller lo loguee.
+ * usa reglas + IA y construye la respuesta final.
  */
 export async function processMessage(ctx: BotContext): Promise<BotResponse> {
-  const intent = detectIntent(ctx.text, ctx.previousState);
-  const response = buildReply(intent, ctx);
-  return response;
+  // 1) Intent por reglas (rápido)
+  const ruleIntent = detectIntent(ctx.text, ctx.previousState);
+
+  // Intents simples donde las reglas suelen bastar
+  const simpleIntents: IntentId[] = [
+    'greeting',
+    'goodbye',
+    'faq_hours',
+    'faq_menu'
+  ];
+
+  if (
+    ruleIntent.confidence >= 0.85 &&
+    simpleIntents.includes(ruleIntent.id)
+  ) {
+    // Para saludos, horarios, menú y despedidas,
+    // seguimos usando solo lo que ya programaste.
+    return buildReply(ruleIntent, ctx);
+  }
+
+  // 2) Para pedidos, estado, smalltalk y cosas más ambiguas: pedimos ayuda a la IA
+  let aiResult: AiNLUResult | null = null;
+
+  try {
+    aiResult = await aiUnderstand(ctx, ruleIntent.id);
+  } catch (err) {
+    console.error('❌ Error en aiUnderstand:', err);
+  }
+
+  // 3) Si la IA devolvió algo razonable, lo usamos como verdad
+  if (aiResult && aiResult.intentId) {
+    const intent: IntentMatch = {
+      id: aiResult.intentId,
+      confidence: aiResult.confidence ?? 0.9,
+      reason: `IA NLU (antes: ${ruleIntent.id} ${ruleIntent.confidence})`
+    };
+
+    const enhancedCtx: BotContext = {
+      ...ctx,
+      metadata: {
+        ...(ctx.metadata ?? {}),
+        aiSlots: aiResult.slots,
+        aiNeedsHuman: aiResult.needsHuman ?? false
+      }
+    };
+
+    const response = buildReply(intent, enhancedCtx);
+
+    // Si la IA sugiere humano, respetamos eso
+    if (aiResult.needsHuman) {
+      response.needsHuman = true;
+      response.nextState = 'handoff_requested';
+    }
+
+    return response;
+  }
+
+  // 4) Si la IA falla, retrocedemos a las reglas normales
+  return buildReply(ruleIntent, ctx);
 }

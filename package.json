@@ -27,7 +27,9 @@
 		"vite": "^7.1.10"
 	},
 	"dependencies": {
+		"@google/generative-ai": "^0.24.1",
 		"firebase": "^12.6.0",
-		"firebase-admin": "^13.6.0"
+		"firebase-admin": "^13.6.0",
+		"openai": "^6.9.1"
 	}
 }
