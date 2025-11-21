@@ -1,12 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { db } from '$lib/firebase';
+  import { analytics, db } from '$lib/firebase';
   import { doc, getDoc, setDoc } from 'firebase/firestore';
   import {
     defaultSettings,
     type Settings
   } from '$lib/settings';
 
+  // ✅ inicializamos settings para evitar undefined
+  let settings: Settings = structuredClone(defaultSettings);
   let loading = true;
   let saving = false;
   let error: string | null = null;
@@ -51,7 +53,8 @@
           }
         };
       } else {
-        // Si no existe el doc, guardamos los defaults la primera vez
+        // ✅ si no existe, escribimos los defaults
+        settings = structuredClone(defaultSettings);
         await setDoc(docRef, settings);
       }
     } catch (e: unknown) {
@@ -77,7 +80,6 @@
         e instanceof Error ? e.message : 'Error al guardar la configuración.';
     } finally {
       saving = false;
-      // Ocultar el mensaje de éxito después de un rato
       setTimeout(() => {
         success = false;
       }, 2500);
@@ -182,8 +184,13 @@
               Estos datos se usan en los mensajes automáticos y en el panel.
             </p>
             <div class="space-y-1">
-              <label class="text-[11px] font-medium text-slate-700">Nombre del negocio</label>
+              <label
+                for="businessName"
+                class="text-[11px] font-medium text-slate-700"
+                >Nombre del negocio</label
+              >
               <input
+                id="businessName"
                 bind:value={settings.businessName}
                 class="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-800
                        outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/60"
@@ -191,8 +198,13 @@
             </div>
 
             <div class="space-y-1">
-              <label class="text-[11px] font-medium text-slate-700">Canal por defecto</label>
+              <label
+                for="defaultChannel"
+                class="text-[11px] font-medium text-slate-700"
+                >Canal por defecto</label
+              >
               <select
+                id="defaultChannel"
                 bind:value={settings.defaultChannel}
                 class="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-800
                        outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/60"
@@ -217,6 +229,7 @@
                 </div>
               </div>
               <input
+                id="allowOrders"
                 type="checkbox"
                 bind:checked={settings.orders.allowOrders}
                 class="h-4 w-7 cursor-pointer rounded-full border border-slate-300 bg-white accent-indigo-600"
@@ -231,6 +244,7 @@
                 </div>
               </div>
               <input
+                id="requireConfirmation"
                 type="checkbox"
                 bind:checked={settings.orders.requireConfirmation}
                 class="h-4 w-7 cursor-pointer rounded-full border border-slate-300 bg-white accent-indigo-600"
@@ -238,8 +252,13 @@
             </div>
 
             <div class="space-y-1">
-              <label class="text-[11px] font-medium text-slate-700">Correo para notificaciones de pedidos</label>
+              <label
+                for="ordersNotifyEmail"
+                class="text-[11px] font-medium text-slate-700"
+                >Correo para notificaciones de pedidos</label
+              >
               <input
+                id="ordersNotifyEmail"
                 type="email"
                 bind:value={settings.orders.notifyEmail}
                 placeholder="ej: pedidos@mitienda.cl"
@@ -268,6 +287,7 @@
                 </div>
               </div>
               <input
+                id="whatsappEnabled"
                 type="checkbox"
                 bind:checked={settings.whatsapp.enabled}
                 class="h-4 w-7 cursor-pointer rounded-full border border-slate-300 bg-white accent-indigo-600"
@@ -275,8 +295,13 @@
             </div>
 
             <div class="space-y-1">
-              <label class="text-[11px] font-medium text-slate-700">Phone Number ID</label>
+              <label
+                for="phoneNumberId"
+                class="text-[11px] font-medium text-slate-700"
+                >Phone Number ID</label
+              >
               <input
+                id="phoneNumberId"
                 bind:value={settings.whatsapp.phoneNumberId}
                 placeholder="Ej: 123456789012345"
                 class="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-800
@@ -285,8 +310,13 @@
             </div>
 
             <div class="space-y-1">
-              <label class="text-[11px] font-medium text-slate-700">Access Token (permanente)</label>
+              <label
+                for="accessToken"
+                class="text-[11px] font-medium text-slate-700"
+                >Access Token (permanente)</label
+              >
               <input
+                id="accessToken"
                 type="password"
                 bind:value={settings.whatsapp.accessToken}
                 class="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-800
@@ -298,8 +328,13 @@
             </div>
 
             <div class="space-y-1">
-              <label class="text-[11px] font-medium text-slate-700">Verify Token (webhook)</label>
+              <label
+                for="verifyToken"
+                class="text-[11px] font-medium text-slate-700"
+                >Verify Token (webhook)</label
+              >
               <input
+                id="verifyToken"
                 bind:value={settings.whatsapp.verifyToken}
                 placeholder="Cadena secreta para validar el webhook"
                 class="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-800
@@ -315,16 +350,20 @@
             </p>
 
             <div class="space-y-1">
-              <label class="text-[11px] font-medium text-slate-700">
+              <label
+                for="notificationPhones"
+                class="text-[11px] font-medium text-slate-700"
+              >
                 Números para notificación de pedidos
               </label>
               <textarea
+                id="notificationPhones"
                 rows="4"
                 bind:value={settings.whatsapp.notificationPhones}
                 placeholder="+56912345678, +56987654321"
                 class="w-full resize-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800
                        outline-none placeholder:text-slate-400 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/60"
-              />
+              ></textarea>
               <p class="text-[10px] text-slate-400">
                 Separa múltiples números con coma. En el futuro, esta lista se puede usar para notificaciones automáticas.
               </p>
@@ -344,8 +383,13 @@
             </p>
 
             <div class="space-y-1">
-              <label class="text-[11px] font-medium text-slate-700">Zona horaria</label>
+              <label
+                for="timezone"
+                class="text-[11px] font-medium text-slate-700"
+                >Zona horaria</label
+              >
               <input
+                id="timezone"
                 bind:value={settings.hours.timezone}
                 placeholder="America/Santiago"
                 class="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-800
@@ -354,8 +398,13 @@
             </div>
 
             <div class="space-y-1">
-              <label class="text-[11px] font-medium text-slate-700">Lunes a viernes</label>
+              <label
+                for="weekdays"
+                class="text-[11px] font-medium text-slate-700"
+                >Lunes a viernes</label
+              >
               <input
+                id="weekdays"
                 bind:value={settings.hours.weekdays}
                 class="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-800
                        outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/60"
@@ -367,8 +416,13 @@
             <h2 class="text-sm font-semibold text-slate-900">Fin de semana</h2>
 
             <div class="space-y-1">
-              <label class="text-[11px] font-medium text-slate-700">Sábado</label>
+              <label
+                for="saturday"
+                class="text-[11px] font-medium text-slate-700"
+                >Sábado</label
+              >
               <input
+                id="saturday"
                 bind:value={settings.hours.saturday}
                 class="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-800
                        outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/60"
@@ -376,13 +430,18 @@
             </div>
 
             <div class="space-y-1">
-              <label class="text-[11px] font-medium text-slate-700">Domingo / festivos</label>
+              <label
+                for="sunday"
+                class="text-[11px] font-medium text-slate-700"
+                >Domingo / festivos</label
+              >
               <textarea
+                id="sunday"
                 rows="3"
                 bind:value={settings.hours.sunday}
                 class="w-full resize-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800
                        outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/60"
-              />
+              ></textarea>
             </div>
           </div>
         </div>
@@ -399,23 +458,33 @@
             </p>
 
             <div class="space-y-1">
-              <label class="text-[11px] font-medium text-slate-700">Mensaje de bienvenida</label>
+              <label
+                for="welcomeMessage"
+                class="text-[11px] font-medium text-slate-700"
+                >Mensaje de bienvenida</label
+              >
               <textarea
+                id="welcomeMessage"
                 rows="4"
                 bind:value={settings.messages.welcome}
                 class="w-full resize-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800
                        outline-none placeholder:text-slate-400 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/60"
-              />
+              ></textarea>
             </div>
 
             <div class="space-y-1">
-              <label class="text-[11px] font-medium text-slate-700">Mensaje por inactividad</label>
+              <label
+                for="inactivityMessage"
+                class="text-[11px] font-medium text-slate-700"
+                >Mensaje por inactividad</label
+              >
               <textarea
+                id="inactivityMessage"
                 rows="3"
                 bind:value={settings.messages.inactivity}
                 class="w-full resize-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800
                        outline-none placeholder:text-slate-400 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/60"
-              />
+              ></textarea>
             </div>
           </div>
 
@@ -423,25 +492,34 @@
             <h2 class="text-sm font-semibold text-slate-900">Handoff y cierre</h2>
 
             <div class="space-y-1">
-              <label class="text-[11px] font-medium text-slate-700">
+              <label
+                for="handoffMessage"
+                class="text-[11px] font-medium text-slate-700"
+              >
                 Mensaje cuando se deriva a humano
               </label>
               <textarea
+                id="handoffMessage"
                 rows="3"
                 bind:value={settings.messages.handoff}
                 class="w-full resize-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800
                        outline-none placeholder:text-slate-400 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/60"
-              />
+              ></textarea>
             </div>
 
             <div class="space-y-1">
-              <label class="text-[11px] font-medium text-slate-700">Mensaje de cierre</label>
+              <label
+                for="closingMessage"
+                class="text-[11px] font-medium text-slate-700"
+                >Mensaje de cierre</label
+              >
               <textarea
+                id="closingMessage"
                 rows="3"
                 bind:value={settings.messages.closing}
                 class="w-full resize-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800
                        outline-none placeholder:text-slate-400 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/60"
-              />
+              ></textarea>
             </div>
           </div>
         </div>
@@ -458,8 +536,13 @@
             </p>
 
             <div class="space-y-1">
-              <label class="text-[11px] font-medium text-slate-700">URL pública base</label>
+              <label
+                for="publicBaseUrl"
+                class="text-[11px] font-medium text-slate-700"
+                >URL pública base</label
+              >
               <input
+                id="publicBaseUrl"
                 bind:value={settings.api.publicBaseUrl}
                 placeholder="https://tu-dominio.com"
                 class="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs text-slate-800
@@ -472,8 +555,13 @@
             </div>
 
             <div class="space-y-1">
-              <label class="text-[11px] font-medium text-slate-700">Webhook Secret</label>
+              <label
+                for="webhookSecret"
+                class="text-[11px] font-medium text-slate-700"
+                >Webhook Secret</label
+              >
               <input
+                id="webhookSecret"
                 type="password"
                 bind:value={settings.api.webhookSecret}
                 placeholder="Cadena secreta opcional para validar requests entrantes"
