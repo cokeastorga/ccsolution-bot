@@ -3,11 +3,12 @@
   import { signInWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
   import { goto } from '$app/navigation';
 
-  let email = '';
-  let password = '';
-  let error: string | null = null;
-  let message: string | null = null;
-  let loading = false;
+  // En Svelte 5: lo que se bindea debe ser $state
+  let email = $state('');
+  let password = $state('');
+  let error = $state<string | null>(null);
+  let message = $state<string | null>(null);
+  let loading = $state(false);
 
   async function login() {
     error = null;
@@ -27,6 +28,7 @@
   async function recoverPassword() {
     error = null;
     message = null;
+
     if (!email) {
       error = 'Ingresa tu correo para recuperar tu contraseña.';
       return;
@@ -41,7 +43,7 @@
   }
 
   function goToRegister() {
-    goto('/register'); // Ruta que tú crearás para el registro
+    goto('/register');
   }
 </script>
 
@@ -84,10 +86,20 @@
     </form>
 
     <div class="mt-6 text-sm flex justify-between items-center text-indigo-700 font-medium">
-<button on:click={() => goto('/recovery')} class="hover:underline transition">
-  ¿Olvidaste tu contraseña?
-</button>
-      <button on:click={goToRegister} class="hover:underline transition">Crear cuenta</button>
+      <button on:click={recoverPassword} class="hover:underline transition">
+        ¿Olvidaste tu contraseña?
+      </button>
+      <button on:click={goToRegister} class="hover:underline transition">
+        Crear cuenta
+      </button>
+    </div>
+
+    <!-- Links legales -->
+    <div class="mt-8 text-xs text-center text-gray-600 leading-relaxed">
+      Al continuar aceptas nuestros
+      <a href="/terminos" class="text-indigo-600 hover:underline">Términos y Condiciones</a>
+      y nuestra
+      <a href="/privacidad" class="text-indigo-600 hover:underline">Política de Privacidad</a>.
     </div>
   </div>
 </div>
