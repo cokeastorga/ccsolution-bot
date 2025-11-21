@@ -1,7 +1,4 @@
 // src/lib/settings.ts
-import { db } from '$lib/firebase';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { env as privateEnv } from '$env/dynamic/private';
 
 export type Settings = {
   businessName: string;
@@ -41,9 +38,9 @@ export const defaultSettings: Settings = {
   defaultChannel: 'whatsapp',
   whatsapp: {
     enabled: true,
-    phoneNumberId: privateEnv.WHATSAPP_PHONE_NUMBER_ID ?? '',
-    accessToken: privateEnv.WHATSAPP_TOKEN ?? '',
-    verifyToken: privateEnv.WHATSAPP_VERIFY_TOKEN ?? '',
+    phoneNumberId: '',      // 👉 ya NO vienen del .env aquí
+    accessToken: '',
+    verifyToken: '',
     notificationPhones: ''
   },
   hours: {
@@ -68,50 +65,7 @@ export const defaultSettings: Settings = {
     notifyEmail: ''
   },
   api: {
-    publicBaseUrl: privateEnv.PUBLIC_BASE_URL ?? '',
-    webhookSecret: privateEnv.WEBHOOK_SECRET ?? ''
+    publicBaseUrl: '',
+    webhookSecret: ''
   }
 };
-
-export async function getGlobalSettings(): Promise<Settings> {
-  try {
-    const ref = doc(db, 'settings', 'global');
-    const snap = await getDoc(ref);
-
-    if (!snap.exists()) {
-      await setDoc(ref, defaultSettings);
-      return defaultSettings;
-    }
-
-    const data = snap.data() as Partial<Settings>;
-
-    return {
-      ...defaultSettings,
-      ...data,
-      whatsapp: {
-        ...defaultSettings.whatsapp,
-        ...(data.whatsapp ?? {})
-      },
-      hours: {
-        ...defaultSettings.hours,
-        ...(data.hours ?? {})
-      },
-      messages: {
-        ...defaultSettings.messages,
-        ...(data.messages ?? {})
-      },
-      orders: {
-        ...defaultSettings.orders,
-        ...(data.orders ?? {})
-      },
-      api: {
-        ...defaultSettings.api,
-        ...(data.api ?? {})
-      }
-    };
-  } catch (err) {
-    console.error('❌ Error leyendo settings desde Firestore:', err);
-    // NO lanzamos error → el webhook sigue funcionando con defaults
-    return defaultSettings;
-  }
-}

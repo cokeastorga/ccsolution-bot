@@ -7,7 +7,8 @@ import {
   type Channel
 } from '$lib/chatbot/engine';
 import { logConversationEvent } from '$lib/chatbot/store';
-import { getGlobalSettings } from '$lib/settings';
+import { getGlobalSettings } from '$lib/settings.server';
+
 
 // Estos valores deberían estar en variables de entorno en producción,
 // pero también pueden venir desde settings si quieres.

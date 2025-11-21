@@ -10,7 +10,8 @@ import {
   updateDoc,
   serverTimestamp
 } from 'firebase/firestore';
-import { getGlobalSettings } from '$lib/settings';
+import { getGlobalSettings } from '$lib/settings.server';
+
 
 export const POST: RequestHandler = async ({ request }) => {
   const body = await request.json().catch(() => null);

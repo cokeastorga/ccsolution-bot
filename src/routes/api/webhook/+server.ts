@@ -1,5 +1,6 @@
 // src/routes/api/whatsapp/+server.ts
-import { getGlobalSettings } from '$lib/settings';
+import { getGlobalSettings } from '$lib/settings.server';
+
 import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import {
