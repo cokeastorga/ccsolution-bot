@@ -6,8 +6,6 @@ import {
 } from '$lib/chatbot/catalog/productos';
 import { buildImageUrl } from '$lib/chatbot/utils/images';
 
-
-
 export type Channel = 'whatsapp' | 'web';
 
 export type IntentId =
@@ -65,7 +63,8 @@ export interface BotResponse {
   /** Datos extra para logs */
   meta?: Record<string, unknown>;
 
-   media?: Array<{
+  /** Medios (por ej. imágenes) a enviar junto con el mensaje */
+  media?: Array<{
     type: 'image';
     url: string;
     caption?: string;
@@ -84,6 +83,340 @@ function normalize(text: string): string {
 }
 
 /**
+ * Extrae cantidad de personas desde el texto.
+ * Soporta cosas como:
+ * - "para 20 personas"
+ * - "quiero una torta de 15"
+ */
+function extractPersonCount(text: string): number | null {
+  const re = /(\d{1,3})\s*(personas?|prs|pax)?/gi;
+  let match: RegExpExecArray | null;
+  let best: number | null = null;
+
+  while ((match = re.exec(text)) !== null) {
+    const value = parseInt(match[1], 10);
+    // Filtramos cosas ridículas (años tipo 2025)
+    if (value > 0 && value <= 100) {
+      best = value;
+    }
+  }
+
+  return best;
+}
+
+/**
+ * Extrae palabras tipo "chica", "mediana", "grande"
+ */
+type SizeKeyword = 'chico' | 'mediano' | 'grande';
+
+function extractSizeKeyword(text: string): SizeKeyword | null {
+  const n = normalize(text);
+
+  if (n.includes('chico') || n.includes('chica') || n.includes('pequen')) {
+    return 'chico';
+  }
+  if (n.includes('mediano') || n.includes('mediana')) {
+    return 'mediano';
+  }
+  if (n.includes('grande') || n.includes('familiar')) {
+    return 'grande';
+  }
+
+  return null;
+}
+
+/**
+ * Intenta seleccionar un tamaño de producto según cantidad de personas.
+ * Asume producto.tamanos = [{ personas: number, precio: number, ... }]
+ */
+function selectTamanoPorPersonas(producto: any, personas: number | null) {
+  if (!producto || !personas || !Array.isArray(producto.tamanos)) return null;
+
+  let best: any = null;
+  let bestDiff = Infinity;
+
+  for (const t of producto.tamanos) {
+    if (typeof t.personas !== 'number') continue;
+    const diff = Math.abs(t.personas - personas);
+    if (diff < bestDiff) {
+      best = t;
+      bestDiff = diff;
+    }
+  }
+
+  return best;
+}
+
+/**
+ * Deducción muy simple de modo de entrega.
+ */
+type DeliveryMode = 'retiro' | 'delivery';
+
+function extractDeliveryMode(text: string): DeliveryMode | null {
+  const n = normalize(text);
+
+  if (
+    n.includes('retiro') ||
+    n.includes('retirar') ||
+    n.includes('local') ||
+    n.includes('tienda')
+  ) {
+    return 'retiro';
+  }
+
+  if (
+    n.includes('delivery') ||
+    n.includes('despacho') ||
+    n.includes('envio') ||
+    n.includes('enviar')
+  ) {
+    return 'delivery';
+  }
+
+  return null;
+}
+
+/**
+ * Detección básica de fecha:
+ * - hoy
+ * - mañana
+ * - pasado mañana
+ * - lunes/martes/...
+ * - "25 de febrero"
+ */
+const MESES = [
+  'enero',
+  'febrero',
+  'marzo',
+  'abril',
+  'mayo',
+  'junio',
+  'julio',
+  'agosto',
+  'septiembre',
+  'setiembre',
+  'octubre',
+  'noviembre',
+  'diciembre'
+];
+
+const DIAS = [
+  'domingo',
+  'lunes',
+  'martes',
+  'miercoles',
+  'miércoles',
+  'jueves',
+  'viernes',
+  'sabado',
+  'sábado'
+];
+
+type DateInfo = {
+  raw: string;
+  iso?: string;
+};
+
+function startOfToday(): Date {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+}
+
+function addDays(date: Date, days: number): Date {
+  return new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
+}
+
+function formatIso(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function extractDateInfo(text: string): DateInfo | null {
+  const n = normalize(text);
+  const base = startOfToday();
+
+  // hoy / mañana / pasado mañana
+  if (n.includes('hoy')) {
+    return { raw: 'hoy', iso: formatIso(base) };
+  }
+
+  if (n.includes('manana')) {
+    return { raw: 'mañana', iso: formatIso(addDays(base, 1)) };
+  }
+
+  if (n.includes('pasado manana') || n.includes('pasado maniana')) {
+    return { raw: 'pasado mañana', iso: formatIso(addDays(base, 2)) };
+  }
+
+  // Días de la semana
+  for (let i = 0; i < DIAS.length; i++) {
+    const dia = DIAS[i];
+    const diaNorm = normalize(dia);
+    if (n.includes(diaNorm)) {
+      const todayIdx = base.getDay(); // 0 domingo – 6 sábado
+      let diff = i - todayIdx;
+      if (diff <= 0) diff += 7; // próximo día de la semana
+      const target = addDays(base, diff);
+      return { raw: dia, iso: formatIso(target) };
+    }
+  }
+
+  // "25 de febrero"
+  const dm = /(\d{1,2})\s+de\s+([a-záéíóú]+)/i.exec(n);
+  if (dm) {
+    const diaNum = parseInt(dm[1], 10);
+    const mesStr = dm[2];
+    const mesIdx = MESES.findIndex(
+      (m) => normalize(m) === normalize(mesStr)
+    );
+    if (mesIdx >= 0 && diaNum >= 1 && diaNum <= 31) {
+      const now = new Date();
+      let year = now.getFullYear();
+      const target = new Date(year, mesIdx, diaNum);
+
+      // si la fecha ya pasó este año, asumimos próximo año
+      if (target < base) {
+        year += 1;
+      }
+
+      const fixed = new Date(year, mesIdx, diaNum);
+      return {
+        raw: `${diaNum} de ${MESES[mesIdx]}`,
+        iso: formatIso(fixed)
+      };
+    }
+  }
+
+  return null;
+}
+
+function formatFechaLabel(info: DateInfo | null): string | null {
+  if (!info) return null;
+  if (info.iso) {
+    const [y, m, d] = info.iso.split('-');
+    return `${d}-${m}-${y} (${info.raw})`;
+  }
+  return info.raw;
+}
+
+/**
+ * Construye una respuesta rica cuando detectamos un producto (torta).
+ * Incluye:
+ * - descripción
+ * - tamaños
+ * - cálculo aproximado según personas
+ * - fecha y modo de entrega si se detectan
+ * - imagen
+ */
+function buildProductoOrderResponse(
+  producto: any,
+  ctx: BotContext,
+  intent: IntentMatch,
+  locale: 'es' | 'en',
+  lineBreak: string
+): BotResponse {
+  const personas = extractPersonCount(ctx.text);
+  const sizeKeyword = extractSizeKeyword(ctx.text);
+  const deliveryMode = extractDeliveryMode(ctx.text);
+  const dateInfo = extractDateInfo(ctx.text);
+  const fechaLabel = formatFechaLabel(dateInfo);
+
+  const imageUrl = buildImageUrl(producto.imagen);
+  let reply = formatearDetalleProducto(producto);
+
+  // Intentamos sugerir un tamaño según personas
+  const tamanoSeleccionado = selectTamanoPorPersonas(producto, personas);
+
+  const detalles: string[] = [];
+
+  if (personas) {
+    detalles.push(`• Para *${personas}* personas`);
+  }
+
+  if (tamanoSeleccionado && typeof tamanoSeleccionado.precio === 'number') {
+    detalles.push(
+      `• Valor de referencia: *$${tamanoSeleccionado.precio.toLocaleString(
+        'es-CL'
+      )}*`
+    );
+  }
+
+  if (sizeKeyword) {
+    if (sizeKeyword === 'chico') {
+      detalles.push('• Tamaño deseado: *chico*');
+    } else if (sizeKeyword === 'mediano') {
+      detalles.push('• Tamaño deseado: *mediano*');
+    } else if (sizeKeyword === 'grande') {
+      detalles.push('• Tamaño deseado: *grande*');
+    }
+  }
+
+  if (deliveryMode === 'retiro') {
+    detalles.push('• Modalidad: *retiro en local*');
+  } else if (deliveryMode === 'delivery') {
+    detalles.push('• Modalidad: *delivery / despacho*');
+  }
+
+  if (fechaLabel) {
+    detalles.push(`• Para el día: *${fechaLabel}*`);
+  }
+
+  if (detalles.length > 0) {
+    reply +=
+      lineBreak +
+      lineBreak +
+      `Con lo que me dices, esto es lo que entendí:` +
+      lineBreak +
+      detalles.join(lineBreak) +
+      lineBreak +
+      lineBreak +
+      `¿Está bien así o quieres ajustar *personas, fecha o modalidad*?`;
+  } else {
+    reply +=
+      lineBreak +
+      lineBreak +
+      `Para ayudarte mejor, dime:` +
+      lineBreak +
+      `• Para cuántas personas es la torta` +
+      lineBreak +
+      `• Para qué día la necesitas` +
+      lineBreak +
+      `• Si es para *retiro* o *delivery*`;
+  }
+
+  const meta: Record<string, unknown> = {
+    ...((ctx.metadata ?? {}) as any),
+    productoId: producto.id,
+    channel: ctx.channel,
+    locale,
+    personas: personas ?? undefined,
+    sizeKeyword: sizeKeyword ?? undefined,
+    deliveryMode: deliveryMode ?? undefined,
+    fechaRaw: dateInfo?.raw ?? undefined,
+    fechaIso: dateInfo?.iso ?? undefined,
+    tamanoSugeridoPersonas: tamanoSeleccionado?.personas ?? undefined,
+    tamanoSugeridoPrecio: tamanoSeleccionado?.precio ?? undefined
+  };
+
+  return {
+    reply,
+    intent: {
+      ...intent,
+      id: 'order_start'
+    },
+    nextState: 'collecting_order_details',
+    needsHuman: false,
+    meta,
+    media: [
+      {
+        type: 'image',
+        url: imageUrl,
+        caption: producto.nombre
+      }
+    ]
+  };
+}
+
+/**
  * Regla simple de detección de intención basada en keywords.
  * Luego se puede reemplazar por embeddings / LLM.
  */
@@ -98,7 +431,7 @@ export function detectIntent(
 
   // Si ya venimos en un flujo de pedido, favorecemos seguir en ese contexto
   if (previousState === 'collecting_order_details') {
-    if (hasAny(['confirmar', 'listo', 'ok', 'estaria bien','ya'])) {
+    if (hasAny(['confirmar', 'listo', 'ok', 'estaria bien', 'ya'])) {
       return {
         id: 'order_start',
         confidence: 0.95,
@@ -159,7 +492,9 @@ export function detectIntent(
       'encargar',
       'quiero un kuchen',
       'quiero una torta',
-      'hacer un pedido'
+      'hacer un pedido',
+      'quiero pedir',
+      'quisiera pedir'
     ])
   ) {
     return {
@@ -187,7 +522,16 @@ export function detectIntent(
   }
 
   // Horarios
-  if (hasAny(['horario', 'abren', 'cierran', 'a que hora', 'atienden', 'horarios'])) {
+  if (
+    hasAny([
+      'horario',
+      'abren',
+      'cierran',
+      'a que hora',
+      'atienden',
+      'horarios'
+    ])
+  ) {
     return {
       id: 'faq_hours',
       confidence: 0.88,
@@ -196,9 +540,7 @@ export function detectIntent(
   }
 
   // Menú / carta / productos
-  if (
-    hasAny(['menu', 'carta', 'productos', 'lista de precios', 'catalogo'])
-  ) {
+  if (hasAny(['menu', 'carta', 'productos', 'lista de precios', 'catalogo'])) {
     return {
       id: 'faq_menu',
       confidence: 0.88,
@@ -214,7 +556,7 @@ export function detectIntent(
       'asesor',
       'ejecutivo',
       'persona real',
-      'atencion al cliente', 
+      'atencion al cliente',
       'vendedor'
     ])
   ) {
@@ -269,7 +611,7 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
         reply =
           `¡Hola! 👋 Soy Edu! el asistente virtual de ${businessName}.` +
           lineBreak +
-          `Me encantan las Facturitas y los paseos por la Costanera` +
+          `Me encantan las facturitas y los paseos por la Costanera` +
           lineBreak +
           `Puedo ayudarte a:` +
           lineBreak +
@@ -277,8 +619,9 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
           lineBreak +
           `• Consultar horarios o productos` +
           lineBreak +
-          `• Derivarte con una persona del equipo`+
-          `Respondeme de forma natural, estoy configurado para brindar una atencion personalizada.` ;
+          `• Derivarte con una persona del equipo` +
+          lineBreak +
+          `Respóndeme de forma natural, estoy configurado para brindar una atención personalizada.`;
       }
       nextState = 'idle';
       break;
@@ -293,35 +636,13 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
       break;
     }
 
-        case 'order_start': {
-      // 1) Intentamos detectar si el usuario ya mencionó una torta específica
+    case 'order_start': {
+      // Detectamos si el usuario ya mencionó una torta específica
       const producto = buscarProductoPorTexto(ctx.text);
 
       if (producto) {
-        const imageUrl = buildImageUrl(producto.imagen);
-
-        reply = formatearDetalleProducto(producto);
-        nextState = 'collecting_order_details';
-
-        return {
-          reply,
-          intent,
-          nextState,
-          needsHuman,
-          meta: {
-            ...((ctx.metadata ?? {}) as any),
-            productoId: producto.id,
-            channel: ctx.channel,
-            locale
-          },
-          media: [
-            {
-              type: 'image',
-              url: imageUrl,
-              caption: producto.nombre
-            }
-          ]
-        };
+        // Respuesta enriquecida con imagen, personas, fecha, etc.
+        return buildProductoOrderResponse(producto, ctx, intent, locale, lineBreak);
       }
 
       // 2) Si aún no se reconoce un producto, seguimos con el flujo genérico
@@ -334,11 +655,12 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
         lineBreak +
         `• "Torta Mil Hojas para el viernes"` +
         lineBreak +
-        `• "Torta de Frambuesa para 12 personas"`;
+        `• "Torta de Frambuesa para 12 personas"` +
+        lineBreak +
+        `Y dime también si es para *retiro* o *delivery*.`;
       nextState = 'collecting_order_details';
       break;
     }
-
 
     case 'order_status': {
       reply =
@@ -352,8 +674,8 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
     case 'faq_hours': {
       const h = settings.hours ?? {};
       reply =
-       ` ${businessName}.` +
-          lineBreak +
+        ` ${businessName}.` +
+        lineBreak +
         `Nuestros horarios de atención son:` +
         lineBreak +
         `🕒 Lunes a viernes: ${h.weekdays ?? '08:00 – 19:00'}` +
@@ -368,7 +690,7 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
       break;
     }
 
-       case 'faq_menu': {
+    case 'faq_menu': {
       const resumen = buildMenuResumen(4); // 4 productos por categoría, ajustable
 
       reply =
@@ -381,12 +703,9 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
         lineBreak +
         lineBreak +
         `Si quieres, dime el *nombre de la torta* (por ejemplo: "Torta Selva Negra", "Torta Alpina" o "Torta Mil Hojas") y para cuántas personas, y te ayudo a cotizar.`;
-
       nextState = ctx.previousState ?? 'idle';
       break;
     }
-
-
 
     case 'handoff_human': {
       if (settings.messages?.handoff) {
@@ -411,7 +730,7 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
         reply =
           `¡Gracias por escribirnos! 🙌` +
           lineBreak +
-          `Si más adelante necesitas hacer un pedido o resolver una duda, puedes hablarme de nuevo cuando quieras, estaré aqui feliz de ayudarte.`;
+          `Si más adelante necesitas hacer un pedido o resolver una duda, puedes hablarme de nuevo cuando quieras, estaré aquí feliz de ayudarte.`;
       }
       nextState = 'ended';
       break;
@@ -419,6 +738,15 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
 
     case 'fallback':
     default: {
+      // 1) Intentamos detectar si el usuario mencionó una torta aunque no haya dicho "pedido"
+      const producto = buscarProductoPorTexto(ctx.text);
+
+      if (producto) {
+        // Reutilizamos la misma lógica enriquecida
+        return buildProductoOrderResponse(producto, ctx, intent, locale, lineBreak);
+      }
+
+      // 2) Si no detecta producto, sigue fallback normal
       reply =
         `No estoy seguro de haber entendido del todo 🤔` +
         lineBreak +
