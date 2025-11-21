@@ -2,12 +2,13 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import type { BotContext, IntentId } from '$lib/chatbot/engine';
 
+// --- Tipos de Datos para Slots y NLU Result ---
 export type AiSlots = {
-  producto?: string; // Nombre del producto (ej: "torta mil hojas", "pan de campo")
-  personas?: number; // Número de personas para la torta
+  producto?: string;
+  personas?: number;
   deliveryMode?: 'retiro' | 'delivery';
-  fechaIso?: string; // Fecha en formato "YYYY-MM-DD"
-  freeText?: string; // Resumen de lo que quiere
+  fechaIso?: string;
+  freeText?: string;
 };
 
 export type AiNLUResult = {
@@ -15,6 +16,7 @@ export type AiNLUResult = {
   confidence: number;
   slots: AiSlots;
   needsHuman?: boolean;
+  generatedReply: string; // La respuesta conversacional generada por Gemini
 };
 
 // --- Configuración de API ---
@@ -28,24 +30,19 @@ if (!apiKey) {
 
 const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
 
-// Modelo recomendado para tareas de clasificación y extracción (rápido y eficiente)
+// Modelo recomendado para tareas de clasificación, extracción y generación (rápido y eficiente)
 const MODEL_NAME = 'gemini-2.5-flash'; 
 
 // --- Instrucción del Sistema ---
+// Definimos el rol, las reglas y el formato de salida esperado.
 const systemInstruction = `
-Eres un motor NLU (Natural Language Understanding) para el chatbot de la pastelería "Delicias Porteñas".
-Tu única tarea es analizar el mensaje del usuario y devolver un objeto JSON con la intención clasificada y las entidades (slots) extraídas.
+Eres la IA de un asistente virtual amigable y experto en pastelería llamado "Edu", que trabaja para "Delicias Porteñas".
+Tu objetivo es doble: 
+1. Clasificar la intención y extraer entidades (slots).
+2. Generar una respuesta inmediata, cálida, personalizada, amigable y que promueva el flujo de la conversación, usando emojis y un tono cercano (el campo "generatedReply").
 
 Intents válidos (campo "intentId"):
-- "greeting"       -> saludos
-- "smalltalk"      -> charla general
-- "order_start"    -> inicio o continuación de un pedido (cotización, compra, etc.)
-- "order_status"   -> consulta de estado de pedido
-- "faq_hours"      -> consulta por horarios de atención
-- "faq_menu"       -> consulta por menú, carta, tipos de productos
-- "handoff_human"  -> cuando el usuario quiere hablar con una persona (necesita "needsHuman": true)
-- "goodbye"        -> despedida
-- "fallback"       -> cuando no queda claro qué quiere
+- "greeting", "smalltalk", "order_start", "order_status", "faq_hours", "faq_menu", "handoff_human", "goodbye", "fallback".
 
 Slots (campo "slots"):
 - producto: nombre o tipo de producto (Ej: "torta mil hojas", "pan de campo").
@@ -54,17 +51,18 @@ Slots (campo "slots"):
 - fechaIso: fecha del pedido en formato "YYYY-MM-DD".
 - freeText: resumen breve en lenguaje natural de la solicitud completa.
 
-Reglas clave para clasificar:
-1.  Si el usuario pide un producto específico (ej: "torta de chocolate"), clasifica como **"order_start"**.
-2.  Si el usuario pide explícitamente hablar con una persona ("asesor", "humano"), clasifica como **"handoff_human"** y setea **"needsHuman": true**.
-3.  Si no puedes clasificar con alta confianza, usa **"fallback"** y **"confidence": 0.5 o menos**.
+Reglas de Generación de Respuesta (campo "generatedReply"):
+- Siempre mantente amigable y en español. Usa el historial y los slots para mantener el contexto.
+- Si el usuario está dando un dato faltante (ej: "para 12 personas" después de preguntar el producto), genera una respuesta que CONFIRME el dato y haga la SIGUIENTE pregunta de forma fluida (ej: "¡Genial! Torta Trufa para 12 personas anotado. ¿Para qué día sería?").
+- Si el usuario pregunta por un producto, genera una respuesta que lo redirija a la ficha o lo anime a hacer el pedido.
+- Si el usuario pide un humano o está frustrado, clasifica "handoff_human" y setea "needsHuman": true.
 
-Debes RESPONDER SIEMPRE SOLO un JSON VÁLIDO con el formato exacto de AiNLUResult, incluyendo los campos "intentId", "confidence", "slots" y "needsHuman".
+Debes RESPONDER SIEMPRE SOLO un JSON VÁLIDO con el formato exacto de AiNLUResult.
 `.trim();
 
 
 /**
- * Llama a Gemini para entender la intención del usuario y extraer slots.
+ * Llama a Gemini para entender la intención del usuario, extraer slots Y generar la respuesta.
  */
 export async function aiUnderstand(
   ctx: BotContext,
@@ -74,39 +72,37 @@ export async function aiUnderstand(
     return null;
   }
 
-  // Creamos el mensaje de contexto para Gemini
-  const userContext = `
-Estado previo del flujo: "${ctx.previousState ?? 'null'}"
-Intención detectada por reglas internas (sugerida): "${ruleIntentId}"
-
-Mensaje del usuario: "${ctx.text}"
-`.trim();
-
   // Generamos el historial de conversación, limitando el tamaño para no exceder tokens
   const history = (ctx.metadata as any)?.history ?? [];
   const historyString = JSON.stringify(history).slice(0, 1500);
 
-  const fullPrompt = `${userContext}\n\nHistorial breve:\n${historyString}`;
+  const fullPrompt = `
+Estado previo del flujo: "${ctx.previousState ?? 'null'}"
+Intención detectada por reglas internas (sugerida): "${ruleIntentId}"
+
+Mensaje del usuario: "${ctx.text}"
+
+Historial breve (para mantener contexto):
+${historyString}
+`;
 
   try {
-    // Usamos el cliente con la configuración JSON Mode
     const model = genAI.getGenerativeModel({ 
         model: MODEL_NAME,
         systemInstruction: systemInstruction 
     });
 
     const result = await model.generateContent({
-        contents: [
-            // Solo pasamos el contenido del usuario, la instrucción del sistema va en la configuración
+        contents: [
             { 
                 role: 'user', 
                 parts: [{ text: fullPrompt }] 
             }
         ],
-        config: {
-            // ⭐ CLAVE: Garantiza que la salida sea JSON
-            responseMimeType: 'application/json' 
-        }
+        config: {
+            // CLAVE: Garantiza que la salida sea JSON
+            responseMimeType: 'application/json' 
+        }
     });
 
     const rawText = result.response.text() ?? '{}';
@@ -118,10 +114,9 @@ Mensaje del usuario: "${ctx.text}"
       console.error('[Gemini NLU] Error parseando JSON:', err, rawText);
       return null;
     }
-
-    // Normalización y validación
-    if (!parsed.intentId || !['greeting', 'smalltalk', 'order_start', 'order_status', 'faq_hours', 'faq_menu', 'handoff_human', 'goodbye', 'fallback'].includes(parsed.intentId)) {
-        // La IA devolvió una intención inválida o nula
+    
+    // Normalización mínima
+    if (!parsed.intentId || !parsed.generatedReply) {
       return null;
     }
 
