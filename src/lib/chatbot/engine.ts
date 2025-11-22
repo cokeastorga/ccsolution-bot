@@ -53,18 +53,11 @@ export interface IntentMatch {
 }
 
 export interface BotResponse {
-  /** Mensaje principal que debería ver el usuario */
   reply: string;
-  /** Intención detectada */
   intent: IntentMatch;
-  /** Nuevo estado conversacional sugerido */
   nextState?: string | null;
-  /** Si el bot recomienda pasar a humano */
   needsHuman?: boolean;
-  /** Datos extra para logs */
   meta?: Record<string, unknown>;
-
-  /** Medios (por ej. imágenes) a enviar junto con el mensaje */
   media?: Array<{
     type: 'image';
     url: string;
@@ -76,15 +69,15 @@ export interface BotResponse {
  * Borrador de pedido que vamos rellenando paso a paso.
  */
 type OrderDraft = {
-  producto?: string; // "torta trufa", "torta alpina"
-  personas?: number; // 12
+  producto?: string;          // "torta alpina"
+  personas?: number;          // 12
   deliveryMode?: DeliveryMode; // 'retiro' | 'delivery'
-  direccion?: string; // "Av Francia 1234"
-  sucursal?: string; // "Sucursal Av Francia ####"
-  fechaIso?: string; // "2025-11-21"
-  hora?: string; // "14:00"
-  extras?: string; // "velas, mensaje..."
-  confirmado?: boolean; // true cuando el cliente dice "sí, está bien"
+  direccion?: string;         // "Av Francia..."
+  sucursal?: string;          // "Sucursal Av. Francia ####"
+  fechaIso?: string;          // "2025-11-21"
+  hora?: string;              // "14:00"
+  extras?: string;            // "velas + mensaje"
+  confirmado?: boolean;       // true cuando el cliente dice "sí, está bien"
 };
 
 /**
@@ -111,8 +104,7 @@ function extractPersonCount(text: string): number | null {
 
   while ((match = re.exec(text)) !== null) {
     const value = parseInt(match[1], 10);
-    // Filtramos cosas ridículas (años tipo 2025)
-    if (value > 0 && value <= 100) {
+    if (value > 0 && value <= 200) {
       best = value;
     }
   }
@@ -194,9 +186,7 @@ function extractDeliveryMode(text: string): DeliveryMode | null {
 
 /**
  * Detección básica de fecha:
- * - hoy
- * - mañana
- * - pasado mañana
+ * - hoy / mañana / pasado mañana
  * - lunes/martes/...
  * - "25 de febrero"
  */
@@ -250,7 +240,6 @@ function extractDateInfo(text: string): DateInfo | null {
   const n = normalize(text);
   const base = startOfToday();
 
-  // hoy / mañana / pasado mañana
   if (n.includes('hoy')) {
     return { raw: 'hoy', iso: formatIso(base) };
   }
@@ -263,20 +252,18 @@ function extractDateInfo(text: string): DateInfo | null {
     return { raw: 'pasado mañana', iso: formatIso(addDays(base, 2)) };
   }
 
-  // Días de la semana
   for (let i = 0; i < DIAS.length; i++) {
     const dia = DIAS[i];
     const diaNorm = normalize(dia);
     if (n.includes(diaNorm)) {
-      const todayIdx = base.getDay(); // 0 domingo – 6 sábado
+      const todayIdx = base.getDay();
       let diff = i - todayIdx;
-      if (diff <= 0) diff += 7; // próximo día de la semana
+      if (diff <= 0) diff += 7;
       const target = addDays(base, diff);
       return { raw: dia, iso: formatIso(target) };
     }
   }
 
-  // "25 de febrero"
   const dm = /(\d{1,2})\s+de\s+([a-záéíóú]+)/i.exec(n);
   if (dm) {
     const diaNum = parseInt(dm[1], 10);
@@ -289,7 +276,6 @@ function extractDateInfo(text: string): DateInfo | null {
       let year = now.getFullYear();
       const target = new Date(year, mesIdx, diaNum);
 
-      // si la fecha ya pasó este año, asumimos próximo año
       if (target < base) {
         year += 1;
       }
@@ -335,6 +321,7 @@ function extractTime(text: string): string | null {
 
 /**
  * Fusiona el borrador previo con los slots devueltos por la IA + texto actual.
+ * La IA manda la intención, nosotros usamos catálogo+regex para completar.
  */
 function mergeOrderDraft(
   previous: OrderDraft | undefined,
@@ -346,12 +333,20 @@ function mergeOrderDraft(
   if (aiSlots?.producto) {
     draft.producto = aiSlots.producto;
   }
+
   if (typeof aiSlots?.personas === 'number') {
     draft.personas = aiSlots.personas;
+  } else if (!draft.personas) {
+    const fromText = extractPersonCount(ctx.text);
+    if (fromText) {
+      draft.personas = fromText;
+    }
   }
+
   if (aiSlots?.deliveryMode === 'retiro' || aiSlots?.deliveryMode === 'delivery') {
     draft.deliveryMode = aiSlots.deliveryMode;
   }
+
   if (aiSlots?.fechaIso) {
     draft.fechaIso = aiSlots.fechaIso;
   }
@@ -374,7 +369,7 @@ function mergeOrderDraft(
     draft.confirmado = true;
   }
 
-  // Dirección: intento simple
+  // Dirección
   if (!draft.direccion) {
     if (
       n.includes('av ') ||
@@ -431,14 +426,13 @@ function buildOrderSummary(draft: OrderDraft): string {
 }
 
 /**
- * Construye una respuesta rica cuando detectamos un producto (torta)
- * por las reglas (sin flujo guiado).
+ * Construye una respuesta rica cuando detectamos un producto por texto directo
+ * (consulta puntual: "cotizar torta alpina para 10 personas").
  */
 function buildProductoOrderResponse(
   producto: any,
   ctx: BotContext,
   intent: IntentMatch,
-  locale: 'es' | 'en',
   lineBreak: string
 ): BotResponse {
   const aiSlots = (ctx.metadata as any)?.aiSlots as
@@ -453,7 +447,6 @@ function buildProductoOrderResponse(
     aiSlots?.personas ?? extractPersonCount(ctx.text);
 
   const sizeKeyword = extractSizeKeyword(ctx.text);
-
   const deliveryMode =
     aiSlots?.deliveryMode ?? extractDeliveryMode(ctx.text);
 
@@ -467,20 +460,49 @@ function buildProductoOrderResponse(
   const imageUrl = buildImageUrl(producto.imagen);
   let reply = formatearDetalleProducto(producto);
 
-  const tamanoSeleccionado = selectTamanoPorPersonas(producto, personas);
-
   const detalles: string[] = [];
 
-  if (personas) {
-    detalles.push(`• Para *${personas}* personas`);
-  }
-
-  if (tamanoSeleccionado && typeof tamanoSeleccionado.precio === 'number') {
-    detalles.push(
-      `• Valor de referencia: *$${tamanoSeleccionado.precio.toLocaleString(
-        'es-CL'
-      )}*`
+  // Sugerencia de tamaño según personas, incluyendo caso "muy grande"
+  if (personas && Array.isArray(producto.tamanos) && producto.tamanos.length > 0) {
+    const maxTamano = producto.tamanos.reduce(
+      (max: any, t: any) =>
+        typeof t.personas === 'number' && t.personas > (max?.personas ?? 0)
+          ? t
+          : max,
+      null as any
     );
+
+    if (maxTamano && typeof maxTamano.personas === 'number') {
+      if (personas <= maxTamano.personas) {
+        const tamano = selectTamanoPorPersonas(producto, personas);
+        if (tamano) {
+          detalles.push(
+            `• Para *${personas}* personas te recomiendo el tamaño *${tamano.nombre ?? 'estándar'}* (aprox. ${tamano.personas} pors.).`
+          );
+          if (typeof tamano.precio === 'number') {
+            detalles.push(
+              `• Valor de referencia: *$${tamano.precio.toLocaleString('es-CL')}*`
+            );
+          }
+        }
+      } else {
+        const tortasNecesarias = Math.ceil(personas / maxTamano.personas);
+        detalles.push(
+          `• Para *${personas}* personas no tenemos una sola torta tan grande, ` +
+            `pero podemos ofrecerte *${tortasNecesarias}* tortas del tamaño más grande (${maxTamano.personas} personas aprox. cada una).`
+        );
+        if (typeof maxTamano.precio === 'number') {
+          const total = tortasNecesarias * maxTamano.precio;
+          detalles.push(
+            `• Valor aproximado por esas ${tortasNecesarias} tortas: *$${total.toLocaleString(
+              'es-CL'
+            )}*`
+          );
+        }
+      }
+    }
+  } else if (personas) {
+    detalles.push(`• Para *${personas}* personas (sin tamaño específico en catálogo).`);
   }
 
   if (sizeKeyword) {
@@ -530,14 +552,7 @@ function buildProductoOrderResponse(
     ...((ctx.metadata ?? {}) as any),
     productoId: producto.id,
     channel: ctx.channel,
-    locale,
-    personas: personas ?? undefined,
-    sizeKeyword: sizeKeyword ?? undefined,
-    deliveryMode: deliveryMode ?? undefined,
-    fechaRaw: dateInfo?.raw ?? undefined,
-    fechaIso: dateInfo?.iso ?? undefined,
-    tamanoSugeridoPersonas: tamanoSeleccionado?.personas ?? undefined,
-    tamanoSugeridoPrecio: tamanoSeleccionado?.precio ?? undefined
+    personas: personas ?? undefined
   };
 
   return {
@@ -561,6 +576,7 @@ function buildProductoOrderResponse(
 
 /**
  * Regla simple de detección de intención basada en keywords.
+ * Se usa como pista para la IA y fallback.
  */
 export function detectIntent(
   text: string,
@@ -571,7 +587,6 @@ export function detectIntent(
   const hasAny = (keywords: string[]) =>
     keywords.some((k) => normalized.includes(k));
 
-  // Si ya venimos en un flujo de pedido, favorecemos seguir en ese contexto
   if (previousState === 'collecting_order_details') {
     if (hasAny(['confirmar', 'listo', 'ok', 'estaria bien', 'ya'])) {
       return {
@@ -588,7 +603,6 @@ export function detectIntent(
     };
   }
 
-  // Greeting
   if (
     hasAny([
       'hola',
@@ -607,7 +621,6 @@ export function detectIntent(
     };
   }
 
-  // Despedida
   if (
     hasAny([
       'gracias',
@@ -626,7 +639,6 @@ export function detectIntent(
     };
   }
 
-  // Pedido / orden
   if (
     hasAny([
       'pedido',
@@ -651,7 +663,6 @@ export function detectIntent(
     };
   }
 
-  // Estado de pedido
   if (
     hasAny([
       'estado de mi pedido',
@@ -668,7 +679,6 @@ export function detectIntent(
     };
   }
 
-  // Horarios
   if (
     hasAny([
       'horario',
@@ -689,7 +699,6 @@ export function detectIntent(
     };
   }
 
-  // 🔥 Menú / carta / productos / "tortas que tienen"
   const containsTortaPalabra =
     normalized.includes('torta') || normalized.includes('tortas');
 
@@ -736,7 +745,6 @@ export function detectIntent(
     };
   }
 
-  // Hablar con humano
   if (
     hasAny([
       'hablar con una persona',
@@ -758,7 +766,6 @@ export function detectIntent(
     };
   }
 
-  // Smalltalk genérica
   if (hasAny(['como estas', 'que tal', 'quien eres', 'que haces'])) {
     return {
       id: 'smalltalk',
@@ -767,7 +774,6 @@ export function detectIntent(
     };
   }
 
-  // Fallback
   return {
     id: 'fallback',
     confidence: 0.3,
@@ -777,6 +783,7 @@ export function detectIntent(
 
 /**
  * Flujo guiado de conversación de pedido.
+ * Aquí usamos AI para entender, y el catálogo para dar detalles concretos.
  */
 function buildOrderConversationReply(
   draft: OrderDraft,
@@ -788,14 +795,22 @@ function buildOrderConversationReply(
     {}) as SettingsMeta;
 
   const businessName = settings.businessName ?? 'Delicias Porteñas';
+  const aiReply =
+    ((ctx.metadata ?? {}) as any).aiGeneratedReply as string | undefined;
 
   // 1) Si aún no sabemos qué producto
   if (!draft.producto) {
+    const replyBase =
+      aiReply && aiReply.trim().length > 0
+        ? aiReply
+        : `¡Claro! 😊 Cuéntame qué torta te gustaría encargar.`;
+    const reply =
+      replyBase +
+      lineBreak +
+      `Por ejemplo: "Torta Alpina", "Torta Mil Hojas" o "Torta Trufa".`;
+
     return {
-      reply:
-        `¡Claro! 😊 Cuéntame qué torta te gustaría encargar.` +
-        lineBreak +
-        `Por ejemplo: "Torta Alpina", "Torta Mil Hojas" o "Torta Trufa".`,
+      reply,
       intent,
       nextState: 'collecting_order_details',
       needsHuman: false,
@@ -803,45 +818,152 @@ function buildOrderConversationReply(
     };
   }
 
-  // 2) Preguntar cantidad de personas
+  // Intentamos encontrar el producto real en el catálogo
+  const producto = buscarProductoPorTexto(draft.producto);
+  const baseMeta = { ...((ctx.metadata ?? {}) as any), orderDraft: draft };
+
+  // 2) Tenemos producto pero aún no personas -> mostrar ficha + imagen + preguntar personas
   if (!draft.personas) {
-    return {
-      reply:
-        `Perfecto, entonces: *${draft.producto}* 🍰` +
+    if (producto) {
+      const imageUrl = buildImageUrl(producto.imagen);
+      const detalle = formatearDetalleProducto(producto);
+
+      const replyIntro =
+        aiReply && aiReply.trim().length > 0
+          ? aiReply
+          : `Perfecto, aquí tienes la información de *${producto.nombre}* 🍰`;
+
+      const reply =
+        replyIntro +
         lineBreak +
-        `¿Para cuántas personas sería aproximadamente?`,
+        lineBreak +
+        detalle +
+        lineBreak +
+        lineBreak +
+        `¿Para cuántas personas sería aproximadamente?`;
+
+      return {
+        reply,
+        intent,
+        nextState: 'collecting_order_details',
+        needsHuman: false,
+        meta: baseMeta,
+        media: [
+          {
+            type: 'image',
+            url: imageUrl,
+            caption: producto.nombre
+          }
+        ]
+      };
+    }
+
+    const fallbackReply =
+      (aiReply && aiReply.trim().length > 0
+        ? aiReply + lineBreak
+        : '') +
+      `¿Qué torta te gustaría encargar? Por ejemplo "Torta Alpina" o "Torta Mil Hojas".`;
+
+    return {
+      reply: fallbackReply,
       intent,
       nextState: 'collecting_order_details',
       needsHuman: false,
-      meta: { ...((ctx.metadata ?? {}) as any), orderDraft: draft }
+      meta: baseMeta
     };
   }
 
-  // 3) Preguntar modalidad
+  // 3) Ya tenemos producto + personas -> sugerir tamaño y preguntar modalidad
   if (!draft.deliveryMode) {
+    let sugerencia = '';
+    if (producto && Array.isArray(producto.tamanos) && producto.tamanos.length > 0) {
+      const personas = draft.personas!;
+      const maxTamano = producto.tamanos.reduce(
+        (max: any, t: any) =>
+          typeof t.personas === 'number' && t.personas > (max?.personas ?? 0)
+            ? t
+            : max,
+        null as any
+      );
+
+      if (maxTamano && typeof maxTamano.personas === 'number') {
+        if (personas <= maxTamano.personas) {
+          const tam = selectTamanoPorPersonas(producto, personas);
+          if (tam) {
+            sugerencia =
+              lineBreak +
+              `Para *${personas}* personas te recomiendo el tamaño *${
+                tam.nombre ?? 'estándar'
+              }* (aprox. ${tam.personas} pors.).` +
+              (typeof tam.precio === 'number'
+                ? lineBreak +
+                  `Valor de referencia aprox.: *$${tam.precio.toLocaleString(
+                    'es-CL'
+                  )}*.`
+                : '');
+          }
+        } else {
+          const tortasNecesarias = Math.ceil(personas / maxTamano.personas);
+          const total =
+            typeof maxTamano.precio === 'number'
+              ? tortasNecesarias * maxTamano.precio
+              : null;
+
+          sugerencia =
+            lineBreak +
+            `Para *${personas}* personas no tenemos una sola torta tan grande, ` +
+            `pero podemos ofrecerte *${tortasNecesarias}* tortas de *${
+              producto.nombre
+            }* tamaño grande (${maxTamano.personas} personas aprox. cada una).` +
+            (total
+              ? lineBreak +
+                `Valor estimado por las ${tortasNecesarias} tortas: *$${total.toLocaleString(
+                  'es-CL'
+                )}*.`
+              : '');
+        }
+      }
+    }
+
+    const replyIntro =
+      aiReply && aiReply.trim().length > 0
+        ? aiReply
+        : `Genial, *${draft.producto}* para *${draft.personas}* personas 🥳`;
+
+    const reply =
+      replyIntro +
+      sugerencia +
+      lineBreak +
+      lineBreak +
+      `¿La quieres para *retiro en local* o prefieres *delivery*?`;
+
     return {
-      reply:
-        `Genial, *${draft.producto}* para *${draft.personas}* personas 🥳` +
-        lineBreak +
-        `¿La quieres para *retiro en local* o prefieres *delivery*?`,
+      reply,
       intent,
       nextState: 'collecting_order_details',
       needsHuman: false,
-      meta: { ...((ctx.metadata ?? {}) as any), orderDraft: draft }
+      meta: baseMeta
     };
   }
 
   // 4) Si es retiro, pedir dirección para recomendar sucursal
   if (draft.deliveryMode === 'retiro' && !draft.direccion) {
+    const replyIntro =
+      aiReply && aiReply.trim().length > 0
+        ? aiReply
+        : `Perfecto, *retiro en local* ✅`;
+
+    const reply =
+      replyIntro +
+      lineBreak +
+      `¿Me puedes contar en qué sector o dirección te encuentras (por ejemplo "Av Francia")? Así te recomiendo la sucursal más cercana.`;
+
     return {
-      reply:
-        `Perfecto, *retiro en local* ✅` +
-        lineBreak +
-        `¿Me puedes contar en qué sector o dirección te encuentras (por ejemplo "Av Francia")? Así te recomiendo la sucursal más cercana.`,
+      reply,
       intent,
       nextState: 'collecting_order_details',
       needsHuman: false,
-      meta: { ...((ctx.metadata ?? {}) as any), orderDraft: draft }
+      meta: baseMeta
     };
   }
 
@@ -849,90 +971,124 @@ function buildOrderConversationReply(
   if (draft.deliveryMode === 'retiro' && draft.direccion && !draft.sucursal) {
     draft.sucursal = 'Sucursal Av. Francia ####';
 
+    const replyIntro =
+      aiReply && aiReply.trim().length > 0
+        ? aiReply
+        : `¡Perfecto! Gracias por la info 🗺️`;
+
+    const reply =
+      replyIntro +
+      lineBreak +
+      `La sucursal más cercana a *${draft.direccion}* es: *${draft.sucursal}*.` +
+      lineBreak +
+      `¿Para qué día y a qué hora te gustaría retirar la torta?`;
+
     return {
-      reply:
-        `¡Perfecto! Gracias por la info 🗺️` +
-        lineBreak +
-        `La sucursal más cercana a *${draft.direccion}* es: *${draft.sucursal}*.` +
-        lineBreak +
-        `¿Para qué día y a qué hora te gustaría retirar la torta?`,
+      reply,
       intent,
       nextState: 'collecting_order_details',
       needsHuman: false,
-      meta: { ...((ctx.metadata ?? {}) as any), orderDraft: draft }
+      meta: { ...baseMeta, orderDraft: draft }
     };
   }
 
   // 6) Fecha/hora
   if (!draft.fechaIso || !draft.hora) {
+    const replyIntro =
+      aiReply && aiReply.trim().length > 0
+        ? aiReply
+        : `Vamos afinando los detalles 🗓️`;
+
+    const reply =
+      replyIntro +
+      lineBreak +
+      `¿Para qué día y a qué hora necesitas tu *${draft.producto}*?` +
+      lineBreak +
+      `Por ejemplo: "para este viernes a las 14:00 hrs".`;
+
     return {
-      reply:
-        `¿Para qué día y a qué hora necesitas tu *${draft.producto}*?` +
-        lineBreak +
-        `Por ejemplo: "para este viernes a las 14:00 hrs".`,
+      reply,
       intent,
       nextState: 'collecting_order_details',
       needsHuman: false,
-      meta: { ...((ctx.metadata ?? {}) as any), orderDraft: draft }
+      meta: baseMeta
     };
   }
 
   // 7) Extras
   if (!draft.extras) {
+    const replyIntro =
+      aiReply && aiReply.trim().length > 0
+        ? aiReply
+        : `Anotado 🗓️ *${draft.fechaIso}* a las *${draft.hora}*.`;
+
+    const reply =
+      replyIntro +
+      lineBreak +
+      `¿Quieres agregar algo más? Por ejemplo: velas, mensaje en la torta ("Feliz Cumpleaños Gemini"), etc. 🎉`;
+
     return {
-      reply:
-        `Anotado 🗓️ *${draft.fechaIso}* a las *${draft.hora}*.` +
-        lineBreak +
-        `¿Quieres agregar algo más? Por ejemplo: velas, mensaje en la torta ("Feliz Cumpleaños Gemini"), etc. 🎉`,
+      reply,
       intent,
       nextState: 'collecting_order_details',
       needsHuman: false,
-      meta: { ...((ctx.metadata ?? {}) as any), orderDraft: draft }
+      meta: baseMeta
     };
   }
 
   // 8) Confirmación final
   if (!draft.confirmado) {
     const resumen = buildOrderSummary(draft);
+
+    const replyIntro =
+      aiReply && aiReply.trim().length > 0
+        ? aiReply
+        : `Perfecto, con lo que me has dicho este sería tu pedido:`;
+
+    const reply =
+      replyIntro +
+      lineBreak +
+      resumen +
+      lineBreak +
+      lineBreak +
+      `¿Está bien así tal cual o quieres cambiar algo antes de enviarlo a una persona del equipo para confirmar? 🙂`;
+
     return {
-      reply:
-        `Perfecto, con lo que me has dicho este sería tu pedido:` +
-        lineBreak +
-        resumen +
-        lineBreak +
-        lineBreak +
-        `¿Está bien así tal cual o quieres cambiar algo antes de enviarlo a una persona del equipo para confirmar? 🙂`,
+      reply,
       intent,
       nextState: 'collecting_order_details',
       needsHuman: false,
-      meta: { ...((ctx.metadata ?? {}) as any), orderDraft: draft }
+      meta: baseMeta
     };
   }
 
   // 9) Ya confirmado → derivar a humano
   const resumen = buildOrderSummary(draft);
+
+  const reply =
+    `¡Excelente! 🙌` +
+    lineBreak +
+    `Voy a derivar tu pedido a una persona del equipo de ${businessName} para que lo revise y te contacte por este mismo número.` +
+    lineBreak +
+    lineBreak +
+    `Resumen del pedido:` +
+    lineBreak +
+    resumen +
+    lineBreak +
+    lineBreak +
+    `¡Muchas gracias por preferirnos! 💛`;
+
   return {
-    reply:
-      `¡Excelente! 🙌` +
-      lineBreak +
-      `Voy a derivar tu pedido a una persona del equipo de ${businessName} para que lo revise y te contacte por este mismo número.` +
-      lineBreak +
-      lineBreak +
-      `Resumen del pedido:` +
-      lineBreak +
-      resumen +
-      lineBreak +
-      lineBreak +
-      `¡Muchas gracias por preferirnos! 💛`,
+    reply,
     intent,
     nextState: 'handoff_requested',
     needsHuman: true,
-    meta: { ...((ctx.metadata ?? {}) as any), orderDraft: draft }
+    meta: baseMeta
   };
 }
 
 /**
- * Construye el texto de respuesta según la intención y el contexto.
+ * Respuestas de texto "clásicas" cuando no necesitamos IA para el flujo.
  */
 export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
   const locale = ctx.locale ?? 'es';
@@ -957,17 +1113,13 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
         reply =
           `¡Hola! 👋 Soy Edu, el asistente virtual de ${businessName}.` +
           lineBreak +
-          `Me encantan las facturitas y los paseos por la Costanera.` +
-          lineBreak +
           `Puedo ayudarte a:` +
           lineBreak +
           `• Hacer un pedido` +
           lineBreak +
           `• Consultar horarios o productos` +
           lineBreak +
-          `• Derivarte con una persona del equipo` +
-          lineBreak +
-          `Respóndeme de forma natural, estoy configurado para brindar una atención personalizada.`;
+          `• Derivarte con una persona del equipo`;
       }
       nextState = 'idle';
       break;
@@ -986,7 +1138,7 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
       const producto = buscarProductoPorTexto(ctx.text);
 
       if (producto) {
-        return buildProductoOrderResponse(producto, ctx, intent, locale, lineBreak);
+        return buildProductoOrderResponse(producto, ctx, intent, lineBreak);
       }
 
       reply =
@@ -994,13 +1146,13 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
         lineBreak +
         `¿Qué te gustaría pedir? Puedes decir algo como:` +
         lineBreak +
-        `• "Torta Selva Negra para 20 personas"` +
+        `• "Torta Alpina para 20 personas"` +
         lineBreak +
         `• "Torta Mil Hojas para el viernes"` +
         lineBreak +
         `• "Torta de Frambuesa para 12 personas"` +
         lineBreak +
-        `Y dime también si es para *retiro* y en qué *sucursal*.`; 
+        `Y dime también si es para *retiro* o *delivery*.`; 
       nextState = 'collecting_order_details';
       break;
     }
@@ -1069,7 +1221,7 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
         reply =
           `¡Gracias por escribirnos! 🙌` +
           lineBreak +
-          `Si más adelante necesitas hacer un pedido o resolver una duda, puedes hablarme de nuevo cuando quieras, estaré aquí feliz de ayudarte.`;
+          `Si más adelante necesitas hacer un pedido o resolver una duda, puedes hablarme de nuevo cuando quieras.`;
       }
       nextState = 'ended';
       break;
@@ -1080,7 +1232,7 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
       const producto = buscarProductoPorTexto(ctx.text);
 
       if (producto) {
-        return buildProductoOrderResponse(producto, ctx, intent, locale, lineBreak);
+        return buildProductoOrderResponse(producto, ctx, intent, lineBreak);
       }
 
       reply =
@@ -1108,19 +1260,17 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
 }
 
 /**
- * Función de alto nivel: recibe un contexto, detecta intención,
- * usa reglas + IA y construye la respuesta final.
+ * Función de alto nivel: recibe un contexto, llama a la IA,
+ * hace merge con el catálogo y construye la respuesta final.
  */
 export async function processMessage(ctx: BotContext): Promise<BotResponse> {
   const ruleIntent = detectIntent(ctx.text, ctx.previousState);
 
-  // Intents simples donde las reglas bastan
+  // Intents ultra simples donde la IA no aporta mucho
   const simpleIntents: IntentId[] = [
     'greeting',
     'goodbye',
     'faq_hours'
-    // sacamos 'faq_menu' para que la IA pueda reinterpretar cosas como
-    // "quiero ver la torta alpina" como flujo de pedido
   ];
 
   if (
@@ -1130,7 +1280,6 @@ export async function processMessage(ctx: BotContext): Promise<BotResponse> {
     return buildReply(ruleIntent, ctx);
   }
 
-  // IA para casos ambiguos / pedidos / menú
   let aiResult: AiNLUResult | null = null;
 
   try {
@@ -1141,7 +1290,7 @@ export async function processMessage(ctx: BotContext): Promise<BotResponse> {
 
   // Si la IA dice algo útil
   if (aiResult && aiResult.intentId) {
-    // Si detecta producto, forzamos flujo de pedido
+    // Si detecta producto, priorizamos flujo de pedido
     if (aiResult.slots?.producto) {
       aiResult.intentId = 'order_start';
       aiResult.confidence = 0.99;
@@ -1171,12 +1320,17 @@ export async function processMessage(ctx: BotContext): Promise<BotResponse> {
 
     const lineBreak = enhancedCtx.channel === 'whatsapp' ? '\n' : '\n';
 
-    // Si estamos en pedido, usamos el flujo guiado
+    // Si estamos en pedido, usamos el flujo guiado con catálogo
     if (
       intent.id === 'order_start' ||
       enhancedCtx.previousState === 'collecting_order_details'
     ) {
-      return buildOrderConversationReply(mergedDraft, enhancedCtx, intent, lineBreak);
+      return buildOrderConversationReply(
+        mergedDraft,
+        enhancedCtx,
+        intent,
+        lineBreak
+      );
     }
 
     const response = buildReply(intent, enhancedCtx);
