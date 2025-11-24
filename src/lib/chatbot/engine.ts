@@ -2,7 +2,9 @@
 import {
   buildMenuResumen,
   buscarProductoPorTexto,
-  formatearDetalleProducto
+  formatearDetalleProducto,
+  sugerirProductosParaPersonas,
+  formatearSugerenciasPorciones
 } from '$lib/chatbot/catalog/productos';
 import { buildImageUrl } from '$lib/chatbot/utils/images';
 import { aiUnderstand, type AiNLUResult } from '$lib/chatbot/aiUnderstanding';
@@ -69,15 +71,15 @@ export interface BotResponse {
  * Borrador de pedido que vamos rellenando paso a paso.
  */
 type OrderDraft = {
-  producto?: string;          // "torta alpina"
-  personas?: number;          // 12
+  producto?: string; // "torta alpina"
+  personas?: number; // 12
   deliveryMode?: DeliveryMode; // 'retiro' | 'delivery'
-  direccion?: string;         // "Av Francia..."
-  sucursal?: string;          // "Sucursal Av. Francia ####"
-  fechaIso?: string;          // "2025-11-21"
-  hora?: string;              // "14:00"
-  extras?: string;            // "velas + mensaje"
-  confirmado?: boolean;       // true cuando el cliente dice "sí, está bien"
+  direccion?: string; // "Av Francia..."
+  sucursal?: string; // "Sucursal Av. Francia ####"
+  fechaIso?: string; // "2025-11-21"
+  hora?: string; // "14:00"
+  extras?: string; // "velas + mensaje"
+  confirmado?: boolean; // true cuando el cliente dice "sí, está bien"
 };
 
 /**
@@ -360,11 +362,19 @@ function mergeOrderDraft(
 
   // Confirmación simple
   if (
-    n.includes('esta bien') ||
-    n.includes('está bien') ||
-    n.includes('eso es lo que quiero') ||
-    n.includes('si, esta bien') ||
-    n.includes('sí, está bien')
+    n.includes('Esta bien') ||
+    n.includes('Si') ||
+    n.includes('Eso es lo que quiero') ||
+    n.includes('Ya porfavor') ||
+    n.includes('Ya, por favor') ||
+    n.includes('Ya, porfavor') ||
+    n.includes('Si gracias') ||
+    n.includes('Si, esta bien') ||
+    n.includes('Si, por favor') ||
+    n.includes('Ya porfa') ||
+    n.includes('Ok gracias') ||
+    n.includes('Bien') ||
+    n.includes('ok')
   ) {
     draft.confirmado = true;
   }
@@ -372,10 +382,14 @@ function mergeOrderDraft(
   // Dirección
   if (!draft.direccion) {
     if (
+      n.includes('Av ') ||
       n.includes('av ') ||
       n.includes('avenida') ||
+       n.includes('Avenida') ||
       n.includes('calle') ||
-      n.includes('pasaje')
+      n.includes('Calle') ||
+      n.includes('pasaje')||
+      n.includes('Pasaje')
     ) {
       draft.direccion = ctx.text.trim();
     }
@@ -800,6 +814,36 @@ function buildOrderConversationReply(
 
   // 1) Si aún no sabemos qué producto
   if (!draft.producto) {
+    // NUEVO: si ya sabemos para cuántas personas, usamos las sugerencias globales
+    if (draft.personas) {
+      const sugerencias = sugerirProductosParaPersonas(draft.personas);
+      const textoSugerencias = formatearSugerenciasPorciones(
+        draft.personas,
+        sugerencias
+      );
+
+      const intro =
+        aiReply && aiReply.trim().length > 0
+          ? aiReply + lineBreak + lineBreak
+          : '';
+
+      const reply =
+        intro +
+        textoSugerencias +
+        lineBreak +
+        lineBreak +
+        `Si prefieres una torta específica, dime el nombre (por ejemplo: "Torta Alpina", "Torta Mil Hojas", "Torta Selva Negra").`;
+
+      return {
+        reply,
+        intent,
+        nextState: 'collecting_order_details',
+        needsHuman: false,
+        meta: { ...((ctx.metadata ?? {}) as any), orderDraft: draft }
+      };
+    }
+
+    // Comportamiento anterior: pedir qué torta quiere
     const replyBase =
       aiReply && aiReply.trim().length > 0
         ? aiReply
@@ -899,7 +943,7 @@ function buildOrderConversationReply(
                 ? lineBreak +
                   `Valor de referencia aprox.: *$${tam.precio.toLocaleString(
                     'es-CL'
-                  )}*.`
+                  )}*`
                 : '');
           }
         } else {
@@ -919,7 +963,7 @@ function buildOrderConversationReply(
               ? lineBreak +
                 `Valor estimado por las ${tortasNecesarias} tortas: *$${total.toLocaleString(
                   'es-CL'
-                )}*.`
+                )}*`
               : '');
         }
       }
@@ -1025,7 +1069,7 @@ function buildOrderConversationReply(
     const reply =
       replyIntro +
       lineBreak +
-      `¿Quieres agregar algo más? Por ejemplo: velas, mensaje en la torta ("Feliz Cumpleaños Gemini"), etc. 🎉`;
+      `¿Quieres agregar algo más? Por ejemplo: velas, mensaje en la torta ("Feliz Cumpleaños"), etc. 🎉`;
 
     return {
       reply,
@@ -1267,11 +1311,7 @@ export async function processMessage(ctx: BotContext): Promise<BotResponse> {
   const ruleIntent = detectIntent(ctx.text, ctx.previousState);
 
   // Intents ultra simples donde la IA no aporta mucho
-  const simpleIntents: IntentId[] = [
-    'greeting',
-    'goodbye',
-    'faq_hours'
-  ];
+  const simpleIntents: IntentId[] = ['greeting', 'goodbye', 'faq_hours'];
 
   if (
     ruleIntent.confidence >= 0.85 &&

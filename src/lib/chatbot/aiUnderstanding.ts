@@ -40,7 +40,7 @@ Eres la IA de un asistente virtual amigable y experto en pastelería llamado "Ed
 
 Tu objetivo principal es:
 1. Clasificar la intención del usuario (campo "intentId").
-2. Extraer entidades relevantes (campo "slots") para construir un pedido de tortas.
+2. Extraer entidades relevantes (campo "slots") para construir o ajustar un pedido de tortas.
 3. (Opcional) Generar una respuesta inmediata, cálida, personalizada y que ayude a continuar la conversación (campo "generatedReply").
 
 IMPORTANTE:
@@ -49,15 +49,15 @@ IMPORTANTE:
 - El idioma principal es español (Chile).
 
 Intents válidos (campo "intentId"):
-- "greeting"       -> saludos ("hola", "buenas", etc.)
-- "smalltalk"      -> charla general ("cómo estás", "quién eres", etc.)
-- "order_start"    -> inicio o continuación de un pedido (tortas, kuchen, productos)
-- "order_status"   -> consulta de estado de pedido
-- "faq_hours"      -> consulta de horarios de atención
-- "faq_menu"       -> consulta de menú, carta, tipos de tortas y productos
-- "handoff_human"  -> cuando el usuario quiere hablar con una persona
-- "goodbye"        -> despedida / cierre
-- "fallback"       -> cuando no queda claro qué quiere el usuario
+- "greeting"       -> saludos ("hola", "buenas", etc.).
+- "smalltalk"      -> charla general ("cómo estás", "quién eres", etc.).
+- "order_start"    -> inicio o continuación de un pedido (tortas, kuchen, productos).
+- "order_status"   -> consulta de estado de pedido.
+- "faq_hours"      -> consulta de horarios de atención.
+- "faq_menu"       -> consulta de menú, carta, tipos de tortas y productos.
+- "handoff_human"  -> cuando el usuario quiere hablar con una persona.
+- "goodbye"        -> despedida / cierre.
+- "fallback"       -> cuando no queda claro qué quiere el usuario.
 
 Slots (campo "slots"):
 - producto: nombre o tipo de producto (por ejemplo "torta mil hojas", "torta selva negra", "torta trufa").
@@ -65,6 +65,13 @@ Slots (campo "slots"):
 - deliveryMode: "retiro" | "delivery" (si el usuario menciona retiro en local, tienda, delivery, envío, despacho, etc.).
 - fechaIso: fecha del pedido en formato "YYYY-MM-DD" si se puede inferir (por ejemplo, "el viernes", "25 de noviembre").
 - freeText: resumen breve (en español) de lo que quiere el usuario, en lenguaje natural.
+
+Reglas especiales para "personas" y pedidos:
+- Si el usuario menciona una cantidad de personas aunque NO mencione un producto claro (ej: "quiero una torta para 40 personas"):
+  - Debes poner esa cantidad en slots.personas (number).
+  - El intentId debe ser "order_start".
+  - Puedes dejar slots.producto vacío o genérico (por ejemplo, "torta").
+- Si el usuario está ajustando un pedido existente (cambia personas, fecha, modo de entrega, etc.), también debe ser "order_start".
 
 Reglas para "needsHuman":
 - Si el usuario pide explícitamente hablar con una persona, humano, encargado, dueño, etc.:
@@ -133,7 +140,7 @@ Intención detectada por reglas internas (sugerida): "${ruleIntentId}"
 Mensaje actual del usuario:
 "${ctx.text}"
 
-Historial breve (para contexto, si existe):
+Historial breve (para contexto, si existe, puede estar vacío):
 ${historyString}
 `.trim();
 
@@ -166,17 +173,30 @@ ${historyString}
       return null;
     }
 
-    // Normalización mínima
+    // Normalización mínima y defensiva
     if (!parsed.intentId) {
+      console.warn('[Gemini NLU] intentId vacío en la respuesta:', parsed);
       return null;
     }
 
-    if (parsed.confidence == null) {
+    if (parsed.confidence == null || Number.isNaN(parsed.confidence)) {
       parsed.confidence = 0.9;
+    } else {
+      // Clamp por seguridad
+      parsed.confidence = Math.max(0, Math.min(1, parsed.confidence));
     }
 
     if (!parsed.slots) {
       parsed.slots = {};
+    }
+
+    if (typeof parsed.slots.personas === 'string') {
+      const n = parseInt(parsed.slots.personas as unknown as string, 10);
+      if (!Number.isNaN(n)) {
+        parsed.slots.personas = n;
+      } else {
+        delete parsed.slots.personas;
+      }
     }
 
     if (!parsed.generatedReply) {

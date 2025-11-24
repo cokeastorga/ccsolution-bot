@@ -13,24 +13,33 @@ function normalize(text: string): string {
     .trim();
 }
 
-// Solo productos disponibles
+// ============================
+// 1. LISTA BASE Y CATEGORÍAS
+// ============================
+
+// Solo productos disponibles (mantiene el nombre antiguo para no romper nada)
 export const productosChatbot: Producto[] = productosBase.filter(
   (p) => p.disponible
 );
 
-// Agrupar por categoría
-export function getProductosPorCategoria(cat: CategoriaChatbot): Producto[] {
+// Agrupar por categoría (API existente)
+export function getProductosPorCategoria(
+  cat: CategoriaChatbot
+): Producto[] {
   return productosChatbot.filter((p) => p.categoria === cat);
 }
 
-// Formatear CLP
+// ============================
+// 2. FORMATEO MONEDA Y MENÚ
+// ============================
+
 const clp = new Intl.NumberFormat('es-CL', {
   style: 'currency',
   currency: 'CLP',
   maximumFractionDigits: 0
 });
 
-// Texto corto de tamaños (para mostrar en FAQ menú)
+// Texto corto de tamaños (para mostrar en el FAQ / menú)
 function formatearTamanosCorto(p: Producto): string {
   if (!p.tamanos?.length) {
     if (p.rindePersonas) {
@@ -46,6 +55,7 @@ function formatearTamanosCorto(p: Producto): string {
 }
 
 // 🧠 Resumen de menú para la intención faq_menu
+// Mantiene firma original: (limitPerCategory?: number)
 export function buildMenuResumen(limitPerCategory = 4): string {
   const categorias: CategoriaChatbot[] = [
     'Bizcocho',
@@ -79,26 +89,93 @@ export function buildMenuResumen(limitPerCategory = 4): string {
   return bloques.join('\n\n');
 }
 
-// 🔍 Buscar 1 producto por texto del usuario
+// ============================
+// 3. BÚSQUEDA POR TEXTO (MEJORADA)
+// ============================
+
+// 🔍 Buscar 1 producto por texto del usuario (mantiene el tipo: Producto | null)
 export function buscarProductoPorTexto(texto: string): Producto | null {
   const n = normalize(texto);
+  if (!n) return null;
 
-  // 1) por nombre
+  // 1) Intento exacto por nombre
   let candidato =
-    productosChatbot.find((p) => normalize(p.nombre) === n) ||
-    productosChatbot.find((p) => normalize(p.nombre).includes(n));
-
+    productosChatbot.find((p) => normalize(p.nombre) === n) ?? null;
   if (candidato) return candidato;
 
-  // 2) por slug
+  // 2) includes por nombre
   candidato =
-    productosChatbot.find((p) => normalize(p.slug) === n) ||
-    productosChatbot.find((p) => normalize(p.slug).includes(n));
+    productosChatbot.find((p) => normalize(p.nombre).includes(n)) ?? null;
+  if (candidato) return candidato;
 
-  return candidato ?? null;
+  // 3) por slug
+  candidato =
+    productosChatbot.find((p) => normalize(p.slug) === n) ?? null;
+  if (candidato) return candidato;
+
+  candidato =
+    productosChatbot.find((p) => normalize(p.slug).includes(n)) ?? null;
+  if (candidato) return candidato;
+
+  // 4) Búsqueda "fuzzy" simple por tokens (para tolerar cosas como "alpima", "mil ojas", etc.)
+  const tokens = n.split(/\s+/).filter((t) => t.length >= 3);
+  if (!tokens.length) return null;
+
+  let mejor: { p: Producto; score: number } | null = null;
+
+  for (const p of productosChatbot) {
+    const target = `${normalize(p.nombre)} ${normalize(p.descripcion)} ${normalize(p.slug)}`;
+    let score = 0;
+
+    for (const t of tokens) {
+      if (target.includes(t)) score += 2;
+      else if (levenshteinDistance(t, target) <= 2) score += 1;
+    }
+
+    if (!mejor || score > mejor.score) {
+      mejor = { p, score };
+    }
+  }
+
+  if (!mejor || mejor.score <= 0) return null;
+  return mejor.p;
 }
 
-// 📄 Ficha detallada para WhatsApp
+// Distancia de Levenshtein muy simple, suficiente para "alpima" → "alpina"
+function levenshteinDistance(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+
+  if (m === 0) return n;
+  if (n === 0) return m;
+
+  const dp: number[][] = Array.from({ length: m + 1 }, () =>
+    new Array(n + 1).fill(0)
+  );
+
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1, // eliminación
+        dp[i][j - 1] + 1, // inserción
+        dp[i - 1][j - 1] + cost // sustitución
+      );
+    }
+  }
+
+  return dp[m][n];
+}
+
+// ============================
+// 4. FICHA DETALLADA PRODUCTO
+// ============================
+
+// 📄 Ficha detallada para WhatsApp (misma API que tenías)
 export function formatearDetalleProducto(p: Producto): string {
   const base =
     `*${p.nombre}*` +
@@ -127,4 +204,221 @@ export function formatearDetalleProducto(p: Producto): string {
   }
 
   return `${base}${tamanosTxt}${addonsTxt}\n\nSi quieres, dime para cuántas personas y la fecha, y seguimos con tu pedido.`;
+}
+
+// =====================================================
+// 5. LÓGICA DE PORCIONES (NUEVO MÓDULO INTELIGENTE)
+// =====================================================
+
+export type VarianteProducto = {
+  producto: Producto;
+  tamanoId?: string;
+  nombreTamano: string; // etiqueta completa "Chico (Ø 20 cm / 10–15p)"
+  precio: number;
+  personasMin: number;
+  personasMax: number;
+};
+
+export type SugerenciaPorciones = {
+  variantes: Array<{
+    variante: VarianteProducto;
+    cantidad: number;
+  }>;
+  totalPersonasMin: number;
+  totalPersonasMax: number;
+  totalPrecio: number;
+};
+
+// Intenta extraer "10-15p", "20–25p", "10 a 15p", "hasta 12p", etc. desde el nombre del tamaño
+function extraerRangoPersonasDesdeNombre(
+  nombre: string
+): { min: number; max: number } | null {
+  const clean = nombre
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+
+  // Ej: "10-15p", "10 - 15 p", "20–25p"
+  let m = clean.match(/(\d+)\s*[-–a]\s*(\d+)\s*p/);
+  if (m) {
+    const min = Number(m[1]);
+    const max = Number(m[2]);
+    if (min > 0 && max >= min) {
+      return { min, max };
+    }
+  }
+
+  // Ej: "hasta 12p"
+  m = clean.match(/hasta\s+(\d+)\s*p/);
+  if (m) {
+    const max = Number(m[1]);
+    if (max > 0) {
+      return { min: Math.max(1, max - 4), max };
+    }
+  }
+
+  // Ej: "para 12p", "12p"
+  m = clean.match(/(\d+)\s*p/);
+  if (m) {
+    const n = Number(m[1]);
+    if (n > 0) {
+      return { min: n - 2, max: n + 2 };
+    }
+  }
+
+  return null;
+}
+
+// Construye todas las variantes (producto + tamaño) con rango de personas
+export function buildVariantesProductos(): VarianteProducto[] {
+  const variantes: VarianteProducto[] = [];
+
+  for (const p of productosChatbot) {
+    // Si tiene tamaños definidos, los tratamos como variantes
+    if (p.tamanos?.length) {
+      for (const t of p.tamanos) {
+        const rango = extraerRangoPersonasDesdeNombre(t.nombre);
+
+        // Fallback: si no pudimos parsear, usamos rindePersonas del producto
+        let personasMin = 0;
+        let personasMax = 0;
+
+        if (rango) {
+          personasMin = rango.min;
+          personasMax = rango.max;
+        } else if (typeof p.rindePersonas === 'number') {
+          personasMin = Math.max(1, Math.round(p.rindePersonas * 0.8));
+          personasMax = Math.round(p.rindePersonas * 1.1);
+        } else {
+          // sin info, lo dejamos razonable
+          personasMin = 8;
+          personasMax = 12;
+        }
+
+        variantes.push({
+          producto: p,
+          tamanoId: t.id,
+          nombreTamano: t.nombre,
+          precio: t.precio,
+          personasMin,
+          personasMax
+        });
+      }
+    } else {
+      // Producto sin tamaños específicos: 1 variante
+      if (!p.rindePersonas) continue;
+
+      const personasMin = Math.max(1, Math.round(p.rindePersonas * 0.8));
+      const personasMax = Math.round(p.rindePersonas * 1.1);
+
+      variantes.push({
+        producto: p,
+        tamanoId: undefined,
+        nombreTamano: `${p.rindePersonas} personas aprox.`,
+        precio: p.precio,
+        personasMin,
+        personasMax
+      });
+    }
+  }
+
+  return variantes;
+}
+
+/**
+ * Sugerir combinaciones para una cantidad de personas.
+ *
+ * Estrategia simple:
+ * - Para cada variante calculamos cuántas unidades necesitamos
+ *   usando personasMax (para no quedarnos cortos).
+ * - Devolvemos las mejores sugerencias (menor "sobrante" y menor precio).
+ *
+ * Ejemplo: si una variante es 20–25p y piden 40:
+ *   personasMax = 25 → ceil(40 / 25) = 2 → sugerimos 2 tortas de ese tamaño.
+ */
+export function sugerirProductosParaPersonas(
+  personasSolicitadas: number,
+  maxResultados = 3
+): SugerenciaPorciones[] {
+  if (!Number.isFinite(personasSolicitadas) || personasSolicitadas <= 0) {
+    return [];
+  }
+
+  const variantes = buildVariantesProductos();
+  const sugerencias: SugerenciaPorciones[] = [];
+
+  for (const variante of variantes) {
+    if (variante.personasMax <= 0) continue;
+
+    const cantidad = Math.ceil(personasSolicitadas / variante.personasMax);
+
+    const totalMin = variante.personasMin * cantidad;
+    const totalMax = variante.personasMax * cantidad;
+
+    // Si incluso en el máximo rinde menos que lo solicitado, descartamos
+    if (totalMax < personasSolicitadas) continue;
+
+    const totalPrecio = variante.precio * cantidad;
+
+    sugerencias.push({
+      variantes: [{ variante, cantidad }],
+      totalPersonasMin: totalMin,
+      totalPersonasMax: totalMax,
+      totalPrecio
+    });
+  }
+
+  // Ordenamos: primero el menor "sobrante", luego el precio más bajo
+  sugerencias.sort((a, b) => {
+    const sobranteA = a.totalPersonasMin - personasSolicitadas;
+    const sobranteB = b.totalPersonasMin - personasSolicitadas;
+
+    if (sobranteA !== sobranteB) {
+      return sobranteA - sobranteB;
+    }
+
+    return a.totalPrecio - b.totalPrecio;
+  });
+
+  return sugerencias.slice(0, maxResultados);
+}
+
+// Helper para generar un texto bonito a partir de las sugerencias
+export function formatearSugerenciasPorciones(
+  personasSolicitadas: number,
+  sugerencias: SugerenciaPorciones[]
+): string {
+  if (!sugerencias.length) {
+    return `No tengo una combinación clara de tortas para *${personasSolicitadas}* personas. Te recomiendo hablar con una persona del equipo para que te asesore mejor 🧁`;
+  }
+
+  const partes: string[] = [];
+
+  partes.push(
+    `No tengo una sola torta exacta para *${personasSolicitadas}* personas, pero estas opciones se ajustan bastante:`
+  );
+  partes.push('');
+
+  sugerencias.forEach((sug, idx) => {
+    const lineaProductos = sug.variantes
+      .map(({ variante, cantidad }) => {
+        const baseNombre = `${variante.producto.nombre} - ${variante.nombreTamano}`;
+        if (cantidad === 1) return baseNombre;
+        return `${cantidad}× ${baseNombre}`;
+      })
+      .join(' + ');
+
+    const rangoTxt = `${sug.totalPersonasMin}–${sug.totalPersonasMax} personas aprox.`;
+    const precioTxt = clp.format(sug.totalPrecio);
+
+    partes.push(
+      `${idx + 1}. ${lineaProductos}\n   → Rinde: ${rangoTxt}\n   → Total aprox.: ${precioTxt}`
+    );
+  });
+
+  partes.push(
+    '\nSi te gusta alguna opción, dime el número (1, 2, 3...) o escríbeme qué prefieres y seguimos con el pedido.'
+  );
+
+  return partes.join('\n');
 }

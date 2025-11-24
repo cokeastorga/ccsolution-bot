@@ -179,7 +179,96 @@ export const POST: RequestHandler = async ({ request }) => {
     });
 
     // ----------------------------------------------------------------
-    // 5) Registrar evento detallado (mensajes en subcolección)
+    // 5) Si el motor pidió handoff, crear pedido en /orders y notificar a humano
+    // ----------------------------------------------------------------
+    if (botResponse.needsHuman && botResponse.nextState === 'handoff_requested') {
+      const orderDraft = (botResponse.meta as any)?.orderDraft;
+
+      // 5.1) Guardar pedido en colección /orders
+      if (orderDraft) {
+        const orderId = `${conversationId}-${Date.now()}`;
+        const orderRef = doc(db, 'orders', orderId);
+
+        await setDoc(orderRef, {
+          conversationId,
+          userId: fromPhone,
+          channel,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          status: 'pending', // pending | confirmed | delivered | canceled
+
+          draft: orderDraft,
+          resumen: {
+            producto: orderDraft.producto ?? null,
+            personas: orderDraft.personas ?? null,
+            fecha: orderDraft.fechaIso ?? null,
+            hora: orderDraft.hora ?? null,
+            deliveryMode: orderDraft.deliveryMode ?? null,
+            direccion: orderDraft.direccion ?? null,
+            sucursal: orderDraft.sucursal ?? null,
+            extras: orderDraft.extras ?? null
+          }
+        });
+
+        console.log('📦 Pedido guardado en /orders:', orderId);
+      }
+
+      // 5.2) Notificar a los teléfonos internos configurados
+      try {
+        const notifyPhones = (whatsappCfg.notificationPhones ?? '')
+          .split(',')
+          .map((p: string) => p.trim())
+          .filter(Boolean);
+
+        if (
+          notifyPhones.length > 0 &&
+          whatsappCfg.accessToken &&
+          whatsappCfg.phoneNumberId
+        ) {
+          const adminUrl = `https://graph.facebook.com/v21.0/${whatsappCfg.phoneNumberId}/messages`;
+          const adminHeaders = {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${whatsappCfg.accessToken}`
+          };
+
+          for (const adminPhone of notifyPhones) {
+            const adminPayload = {
+              messaging_product: 'whatsapp',
+              to: adminPhone,
+              type: 'text' as const,
+              text: {
+                body:
+                  `📥 *Nuevo pedido pendiente de confirmación*\n` +
+                  `Cliente: ${fromPhone}\n\n` +
+                  `${botResponse.reply}\n\n` +
+                  `👉 Responde directamente al cliente para continuar la atención.`
+              }
+            };
+
+            const adminRes = await fetch(adminUrl, {
+              method: 'POST',
+              headers: adminHeaders,
+              body: JSON.stringify(adminPayload)
+            });
+
+            if (!adminRes.ok) {
+              const errBody = await adminRes.text();
+              console.error(
+                '❌ Error enviando notificación de pedido a admin:',
+                errBody
+              );
+            } else {
+              console.log('✅ Notificación de pedido enviada a admin:', adminPhone);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('⚠️ Error notificando a admin por WhatsApp:', err);
+      }
+    }
+
+    // ----------------------------------------------------------------
+    // 6) Registrar evento detallado (mensajes en subcolección)
     //    ⚠️ Importante: NO le pasamos rawPayload para que NO sobreescriba metadata.
     // ----------------------------------------------------------------
     try {
@@ -194,65 +283,69 @@ export const POST: RequestHandler = async ({ request }) => {
     }
 
     // ----------------------------------------------------------------
-    // 6) Enviar respuesta al cliente por WhatsApp Cloud API
+    // 7) Enviar respuesta al cliente por WhatsApp Cloud API
     // ----------------------------------------------------------------
     try {
-      const url = `https://graph.facebook.com/v21.0/${whatsappCfg.phoneNumberId}/messages`;
-
-      // Primero texto
-      const textPayload = {
-        messaging_product: 'whatsapp',
-        to: fromPhone,
-        type: 'text' as const,
-        text: {
-          body: botResponse.reply
-        }
-      };
-
-      const headers = {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${whatsappCfg.accessToken}`
-      };
-
-      const textRes = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(textPayload)
-      });
-
-      if (!textRes.ok) {
-        const errBody = await textRes.text();
-        console.error('❌ Error enviando mensaje de texto a WhatsApp:', errBody);
+      if (!whatsappCfg.accessToken || !whatsappCfg.phoneNumberId) {
+        console.error('❌ Falta configuración de WhatsApp (accessToken/phoneNumberId)');
       } else {
-        console.log('✅ Mensaje de texto enviado a WhatsApp');
-      }
+        const url = `https://graph.facebook.com/v21.0/${whatsappCfg.phoneNumberId}/messages`;
 
-      // Luego, si hay media (imágenes de tortas), las mandamos
-      if (botResponse.media && botResponse.media.length > 0) {
-        for (const m of botResponse.media) {
-          if (m.type !== 'image') continue;
+        const headers = {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${whatsappCfg.accessToken}`
+        };
 
-          const imagePayload = {
-            messaging_product: 'whatsapp',
-            to: fromPhone,
-            type: 'image' as const,
-            image: {
-              link: m.url,
-              caption: m.caption ?? ''
+        // 7.1) Texto principal
+        const textPayload = {
+          messaging_product: 'whatsapp',
+          to: fromPhone,
+          type: 'text' as const,
+          text: {
+            body: botResponse.reply
+          }
+        };
+
+        const textRes = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(textPayload)
+        });
+
+        if (!textRes.ok) {
+          const errBody = await textRes.text();
+          console.error('❌ Error enviando mensaje de texto a WhatsApp:', errBody);
+        } else {
+          console.log('✅ Mensaje de texto enviado a WhatsApp');
+        }
+
+        // 7.2) Media (imágenes de tortas)
+        if (botResponse.media && botResponse.media.length > 0) {
+          for (const m of botResponse.media) {
+            if (m.type !== 'image') continue;
+
+            const imagePayload = {
+              messaging_product: 'whatsapp',
+              to: fromPhone,
+              type: 'image' as const,
+              image: {
+                link: m.url,
+                caption: m.caption ?? ''
+              }
+            };
+
+            const imgRes = await fetch(url, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify(imagePayload)
+            });
+
+            if (!imgRes.ok) {
+              const errBody = await imgRes.text();
+              console.error('❌ Error enviando imagen a WhatsApp:', errBody);
+            } else {
+              console.log('✅ Imagen enviada a WhatsApp');
             }
-          };
-
-          const imgRes = await fetch(url, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(imagePayload)
-          });
-
-          if (!imgRes.ok) {
-            const errBody = await imgRes.text();
-            console.error('❌ Error enviando imagen a WhatsApp:', errBody);
-          } else {
-            console.log('✅ Imagen enviada a WhatsApp');
           }
         }
       }
@@ -261,7 +354,7 @@ export const POST: RequestHandler = async ({ request }) => {
     }
 
     // ----------------------------------------------------------------
-    // 7) Responder a Meta rápido
+    // 8) Responder a Meta rápido
     // ----------------------------------------------------------------
     return json({
       ok: true,
