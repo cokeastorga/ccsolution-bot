@@ -52,11 +52,10 @@ function extractSizeKeyword(text: string): 'chico' | 'mediano' | 'grande' | null
   return null;
 }
 
-// Detectamos explícitamente si el usuario menciona el modo en ESTE mensaje
 function extractDeliveryMode(text: string): DeliveryMode | null {
   const n = normalize(text);
   if (n.includes('retiro') || n.includes('retirar') || n.includes('local') || n.includes('tienda')) return 'retiro';
-  if (n.includes('delivery') || n.includes('despacho') || n.includes('envio') || n.includes('enviar') || n.includes('domicilio')) return 'delivery';
+  if (n.includes('delivery') || n.includes('despacho') || n.includes('envio') || n.includes('enviar')) return 'delivery';
   return null;
 }
 
@@ -153,14 +152,11 @@ export function mergeOrderDraft(previous: OrderDraft | undefined, aiSlots: any, 
     if (fromText) draft.personas = fromText;
   }
 
-  // 🛡️ DELIVERY MODE (Protección contra sobreescritura de IA)
-  // Si el usuario pide "delivery" explícitamente, lo capturamos para negárselo después en buildResponse
+  // Delivery Mode
   const explicitMode = extractDeliveryMode(ctx.text);
   if (explicitMode) {
     draft.deliveryMode = explicitMode;
-  } 
-  // Si la IA sugiere delivery, lo ignoramos si es nuevo, o lo mantenemos si es una confirmación
-  else if (aiSlots?.deliveryMode && draft.deliveryMode === aiSlots.deliveryMode) {
+  } else if (aiSlots?.deliveryMode && draft.deliveryMode === aiSlots.deliveryMode) {
     draft.deliveryMode = aiSlots.deliveryMode;
   }
 
@@ -169,23 +165,39 @@ export function mergeOrderDraft(previous: OrderDraft | undefined, aiSlots: any, 
   const posibleHora = extractTime(ctx.text);
   if (posibleHora) draft.hora = posibleHora;
 
-  // Confirmación
+  // ---------------------------------------------------------
+  // ✅ CONFIRMACIÓN MEJORADA (Corrección del bucle "si")
+  // ---------------------------------------------------------
   const n = normalize(ctx.text);
-  if (n.includes('esta bien') || n.includes('ok') || n.includes('si por favor') || n.includes('confirmar')) {
+  
+  // Lista de palabras que indican confirmación
+  const palabrasConfirmacion = [
+    'si', 'sí', 'ok', 'listo', 'dale', 'bueno', 
+    'correcto', 'perfecto', 'confirmo', 'esta bien', 'está bien'
+  ];
+
+  // Verificamos si alguna palabra de confirmación está presente
+  // Aceptamos "si", "si gracias", "ok dale", etc.
+  const esConfirmacion = palabrasConfirmacion.some(kw => 
+    n === kw || n.startsWith(kw + ' ') || n.includes(' ' + kw)
+  );
+
+  if (esConfirmacion) {
     draft.confirmado = true;
   }
+  // ---------------------------------------------------------
 
-  // 📍 DIRECCIÓN (Captura inteligente)
+  // Dirección (Contexto)
   const keywordsDireccion = ['av ', 'calle', 'pasaje', 'condominio', 'villa', 'poblacion', 'sector', 'block', 'depto'];
   const hasKeyword = keywordsDireccion.some(k => n.includes(k));
   
-  // Regla de contexto: Si estamos en modo retiro y nos falta la dirección
   const isContextualAddress = 
     draft.deliveryMode === 'retiro' && 
     !draft.direccion && 
     ctx.text.length > 3 &&
     !draft.confirmado &&
-    !['si', 'no', 'ok', 'gracias'].includes(n);
+    !esConfirmacion && // Usamos la variable calculada arriba
+    !['no', 'gracias'].includes(n);
 
   if (!draft.direccion && (hasKeyword || isContextualAddress)) {
     draft.direccion = ctx.text.trim();
@@ -229,14 +241,11 @@ export async function buildProductOrderResponse(
 ): Promise<BotResponse> {
   const baseMeta = { ...((ctx.metadata ?? {}) as any), orderDraft: draft };
 
-  // 🛡️ VALIDACIÓN DE ALUCINACIONES
   if (draft.producto && !producto) {
     const draftCorregido = { ...draft, producto: null };
     const menu = buildMenuResumen(3);
-    const reply = `Mmm... lo siento 😅, pero no encuentro una torta llamada *"${draft.producto}"* en nuestro catálogo.\n\nAquí tienes algunas opciones disponibles:\n\n${menu}\n\n¿Te gustaría alguna de estas?`;
-    
     return {
-      reply,
+      reply: `Mmm... lo siento 😅, pero no encuentro una torta llamada *"${draft.producto}"* en nuestro catálogo.\n\nAquí tienes algunas opciones disponibles:\n\n${menu}\n\n¿Te gustaría alguna de estas?`,
       intent,
       nextState: 'collecting_order_details',
       needsHuman: false,
@@ -244,7 +253,6 @@ export async function buildProductOrderResponse(
     };
   }
 
-  // 1. Faltan datos del producto
   if (!draft.producto) {
     if (draft.personas) {
       const sugerencias = sugerirProductosParaPersonas(draft.personas);
@@ -268,7 +276,6 @@ export async function buildProductOrderResponse(
     };
   }
 
-  // 2. Tenemos producto pero no personas
   if (!draft.personas) {
     if (producto) {
       const imageUrl = buildImageUrl(producto.imagen);
@@ -286,24 +293,16 @@ export async function buildProductOrderResponse(
     return { reply: `¿Para cuántas personas sería la torta?`, intent, nextState: 'collecting_order_details', needsHuman: false, meta: baseMeta };
   }
 
-  // ---------------------------------------------------------
-  // 🚫 BLOQUEO DE DELIVERY: Si el usuario pidió delivery, le decimos que no hay.
-  // ---------------------------------------------------------
   if (draft.deliveryMode === 'delivery') {
     return {
       reply: `Lo siento mucho 😔. Por el momento **no contamos con servicio de delivery**, solo retiro en nuestros locales.\n\n¿Te acomoda cambiar tu pedido a *retiro en local*?`,
       intent,
       nextState: 'collecting_order_details',
       needsHuman: false,
-      // Reseteamos el modo a undefined para que el usuario elija de nuevo (o confirme retiro)
       meta: { ...baseMeta, orderDraft: { ...draft, deliveryMode: undefined } }
     };
   }
 
-  // ---------------------------------------------------------
-  // 3. AUTO-ASIGNACIÓN DE RETIRO
-  // Si no hay modo definido, asumimos Retiro y preguntamos la dirección.
-  // ---------------------------------------------------------
   if (!draft.deliveryMode) {
     let sugerencia = '';
     if (producto && producto.tamanos) {
@@ -312,8 +311,6 @@ export async function buildProductOrderResponse(
     }
     
     const replyIntro = aiReply ?? `Genial, *${draft.producto}* para *${draft.personas}* personas 🥳`;
-    
-    // Forzamos el modo retiro en el borrador para el siguiente turno
     const draftWithRetiro = { ...draft, deliveryMode: 'retiro' as DeliveryMode };
 
     return {
@@ -325,7 +322,6 @@ export async function buildProductOrderResponse(
     };
   }
 
-  // 4. Si es retiro pero falta dirección (Este paso ahora es redundante pero se mantiene por seguridad)
   if (draft.deliveryMode === 'retiro' && !draft.direccion) {
     return { 
       reply: `Perfecto, retiro en local ✅\n¿En qué sector o dirección te encuentras? Así calculo cuál sucursal te queda más cerca.`, 
@@ -336,9 +332,7 @@ export async function buildProductOrderResponse(
     };
   }
 
-  // 5. Si es retiro, hay dirección pero no sucursal -> USAR IA
   if (draft.deliveryMode === 'retiro' && draft.direccion && !draft.sucursal) {
-    
     const tiendaSugerida = await findNearestStoreWithAI(draft.direccion);
     draft.sucursal = tiendaSugerida.nombre;
 
@@ -362,23 +356,20 @@ export async function buildProductOrderResponse(
     };
   }
 
-  // 6. Fecha y hora
   if (!draft.fechaIso || !draft.hora) {
     return { reply: `¿Para qué día y hora necesitas tu pedido?`, intent, nextState: 'collecting_order_details', needsHuman: false, meta: baseMeta };
   }
 
-  // 7. Extras
   if (!draft.extras) {
     return { reply: `Anotado 🗓️.\n¿Quieres agregar algo más? (velas, mensaje, etc.)`, intent, nextState: 'collecting_order_details', needsHuman: false, meta: baseMeta };
   }
 
-  // 8. Confirmación
   if (!draft.confirmado) {
     const resumen = buildOrderSummary(draft);
     return { reply: `Este sería tu pedido:\n${resumen}\n\n¿Está bien así para confirmar?`, intent, nextState: 'collecting_order_details', needsHuman: false, meta: baseMeta };
   }
 
-  // 9. Pedido Finalizado
+  // 9. Pedido Finalizado / Derivación
   const resumen = buildOrderSummary(draft);
   return {
     reply: `¡Excelente! 🙌 Derivo tu pedido al equipo.\n\n${resumen}\n\n¡Gracias!`,

@@ -100,7 +100,7 @@ async function buildReply(intent: IntentMatch, ctx: BotContext): Promise<BotResp
 
   switch (intent.id) {
     case 'greeting':
-      reply = settings.messages?.welcome ?? `¡Hola! 👋 Soy Edu, el asistente virtual de ${businessName}.`;
+      reply = settings.messages?.welcome ?? `¡Hola! 👋 Soy Edu, el asistente virtual de ${businessName}. En que te puedo ayudar ?`;
       nextState = 'idle';
       break;
     case 'order_start':
