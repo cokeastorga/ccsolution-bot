@@ -52,10 +52,11 @@ function extractSizeKeyword(text: string): 'chico' | 'mediano' | 'grande' | null
   return null;
 }
 
+// Detectamos explícitamente si el usuario menciona el modo en ESTE mensaje
 function extractDeliveryMode(text: string): DeliveryMode | null {
   const n = normalize(text);
   if (n.includes('retiro') || n.includes('retirar') || n.includes('local') || n.includes('tienda')) return 'retiro';
-  if (n.includes('delivery') || n.includes('despacho') || n.includes('envio') || n.includes('enviar')) return 'delivery';
+  if (n.includes('delivery') || n.includes('despacho') || n.includes('envio') || n.includes('enviar') || n.includes('domicilio')) return 'delivery';
   return null;
 }
 
@@ -119,7 +120,6 @@ function formatFechaLabel(info: DateInfo | null): string | null {
 function extractTime(text: string): string | null {
   const n = normalize(text);
   
-  // 1. Intento HH:MM o H.MM (ej: 14:30, 9.00)
   let match = /(\d{1,2})[:.](\d{2})/.exec(n);
   if (match) {
     const hh = parseInt(match[1], 10);
@@ -127,21 +127,12 @@ function extractTime(text: string): string | null {
     if (hh >= 0 && hh <= 23) return `${hh.toString().padStart(2, '0')}:${mm}`;
   }
 
-  // 2. Intento formato "2 de la tarde", "14 hrs", "5 pm"
-  // Busca un número solo (1 o 2 dígitos) seguido de palabras clave opcionales
   match = /(\d{1,2})\s*(hrs|horas|h|pm|am|de la tarde|de la manana)?/.exec(n);
   if (match) {
     let hh = parseInt(match[1], 10);
     const suffix = match[2] || '';
-    
-    // Si dice "2 de la tarde" o "2 pm", sumamos 12
-    if ((suffix.includes('pm') || suffix.includes('tarde')) && hh < 12) {
-      hh += 12;
-    }
-    
-    if (hh >= 0 && hh <= 23) {
-      return `${hh.toString().padStart(2, '0')}:00`;
-    }
+    if ((suffix.includes('pm') || suffix.includes('tarde')) && hh < 12) hh += 12;
+    if (hh >= 0 && hh <= 23) return `${hh.toString().padStart(2, '0')}:00`;
   }
 
   return null;
@@ -152,39 +143,59 @@ function extractTime(text: string): string | null {
 export function mergeOrderDraft(previous: OrderDraft | undefined, aiSlots: any, ctx: BotContext): OrderDraft {
   const draft: OrderDraft = { ...(previous ?? {}) };
 
+  // Producto
   if (aiSlots?.producto) draft.producto = aiSlots.producto;
+
+  // Personas
   if (typeof aiSlots?.personas === 'number') draft.personas = aiSlots.personas;
   else if (!draft.personas) {
     const fromText = extractPersonCount(ctx.text);
     if (fromText) draft.personas = fromText;
   }
 
-  if (aiSlots?.deliveryMode === 'retiro' || aiSlots?.deliveryMode === 'delivery') draft.deliveryMode = aiSlots.deliveryMode;
-  if (aiSlots?.fechaIso) draft.fechaIso = aiSlots.fechaIso;
+  // 🛡️ DELIVERY MODE (Protección contra sobreescritura de IA)
+  // Si el usuario pide "delivery" explícitamente, lo capturamos para negárselo después en buildResponse
+  const explicitMode = extractDeliveryMode(ctx.text);
+  if (explicitMode) {
+    draft.deliveryMode = explicitMode;
+  } 
+  // Si la IA sugiere delivery, lo ignoramos si es nuevo, o lo mantenemos si es una confirmación
+  else if (aiSlots?.deliveryMode && draft.deliveryMode === aiSlots.deliveryMode) {
+    draft.deliveryMode = aiSlots.deliveryMode;
+  }
 
+  // Fecha y Hora
+  if (aiSlots?.fechaIso) draft.fechaIso = aiSlots.fechaIso;
   const posibleHora = extractTime(ctx.text);
   if (posibleHora) draft.hora = posibleHora;
 
+  // Confirmación
   const n = normalize(ctx.text);
   if (n.includes('esta bien') || n.includes('ok') || n.includes('si por favor') || n.includes('confirmar')) {
     draft.confirmado = true;
   }
 
-  // Detección de Dirección mejorada
-  if (!draft.direccion && (
-    n.includes('av ') || n.includes('calle') || n.includes('pasaje') || 
-    n.includes('condominio') || n.includes('villa') || n.includes('poblacion') || n.includes('sector')
-  )) {
+  // 📍 DIRECCIÓN (Captura inteligente)
+  const keywordsDireccion = ['av ', 'calle', 'pasaje', 'condominio', 'villa', 'poblacion', 'sector', 'block', 'depto'];
+  const hasKeyword = keywordsDireccion.some(k => n.includes(k));
+  
+  // Regla de contexto: Si estamos en modo retiro y nos falta la dirección
+  const isContextualAddress = 
+    draft.deliveryMode === 'retiro' && 
+    !draft.direccion && 
+    ctx.text.length > 3 &&
+    !draft.confirmado &&
+    !['si', 'no', 'ok', 'gracias'].includes(n);
+
+  if (!draft.direccion && (hasKeyword || isContextualAddress)) {
     draft.direccion = ctx.text.trim();
   }
 
-  // Detección de Extras + Negación (SOLUCIÓN AL BUCLE)
+  // Extras
   if (!draft.extras) {
     if (n.includes('vela') || n.includes('mensaje') || n.includes('tarjeta')) {
       draft.extras = ctx.text.trim();
-    } 
-    // Si dice que NO quiere nada
-    else if (
+    } else if (
       n === 'no' || n === 'nada' || n === 'ninguno' || 
       n.includes('nada mas') || n.includes('no gracias') || n.includes('ningun')
     ) {
@@ -275,24 +286,46 @@ export async function buildProductOrderResponse(
     return { reply: `¿Para cuántas personas sería la torta?`, intent, nextState: 'collecting_order_details', needsHuman: false, meta: baseMeta };
   }
 
-  // 3. Tenemos personas -> sugerir tamaño y pedir delivery
+  // ---------------------------------------------------------
+  // 🚫 BLOQUEO DE DELIVERY: Si el usuario pidió delivery, le decimos que no hay.
+  // ---------------------------------------------------------
+  if (draft.deliveryMode === 'delivery') {
+    return {
+      reply: `Lo siento mucho 😔. Por el momento **no contamos con servicio de delivery**, solo retiro en nuestros locales.\n\n¿Te acomoda cambiar tu pedido a *retiro en local*?`,
+      intent,
+      nextState: 'collecting_order_details',
+      needsHuman: false,
+      // Reseteamos el modo a undefined para que el usuario elija de nuevo (o confirme retiro)
+      meta: { ...baseMeta, orderDraft: { ...draft, deliveryMode: undefined } }
+    };
+  }
+
+  // ---------------------------------------------------------
+  // 3. AUTO-ASIGNACIÓN DE RETIRO
+  // Si no hay modo definido, asumimos Retiro y preguntamos la dirección.
+  // ---------------------------------------------------------
   if (!draft.deliveryMode) {
     let sugerencia = '';
     if (producto && producto.tamanos) {
        const tam = selectTamanoPorPersonas(producto, draft.personas);
        if (tam) sugerencia = `\nPara *${draft.personas}* te recomiendo el tamaño *${tam.nombre}*.`;
     }
+    
     const replyIntro = aiReply ?? `Genial, *${draft.producto}* para *${draft.personas}* personas 🥳`;
+    
+    // Forzamos el modo retiro en el borrador para el siguiente turno
+    const draftWithRetiro = { ...draft, deliveryMode: 'retiro' as DeliveryMode };
+
     return {
-      reply: `${replyIntro}${sugerencia}\n\n¿La quieres para *retiro en local* o prefieres *delivery*?`,
+      reply: `${replyIntro}${sugerencia}\n\nTe cuento que por ahora **solo realizamos retiro en local** 🏪.\n\n¿En qué sector o dirección te encuentras? Así calculo qué sucursal te queda más cerca.`,
       intent,
       nextState: 'collecting_order_details',
       needsHuman: false,
-      meta: baseMeta
+      meta: { ...baseMeta, orderDraft: draftWithRetiro }
     };
   }
 
-  // 4. Si es retiro pero falta dirección
+  // 4. Si es retiro pero falta dirección (Este paso ahora es redundante pero se mantiene por seguridad)
   if (draft.deliveryMode === 'retiro' && !draft.direccion) {
     return { 
       reply: `Perfecto, retiro en local ✅\n¿En qué sector o dirección te encuentras? Así calculo cuál sucursal te queda más cerca.`, 
