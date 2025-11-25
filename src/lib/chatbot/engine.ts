@@ -466,7 +466,7 @@ function buildProductoOrderResponse(
 
   const detalles: string[] = [];
 
-  // Sugerencia de tamaño según personas, incluyendo caso "muy grande"
+  // Sugerencia de tamaño según personas
   if (personas && Array.isArray(producto.tamanos) && producto.tamanos.length > 0) {
     const maxTamano = producto.tamanos.reduce(
       (max: any, t: any) =>
@@ -580,7 +580,6 @@ function buildProductoOrderResponse(
 
 /**
  * Regla simple de detección de intención basada en keywords.
- * Se usa como pista para la IA y fallback.
  */
 export function detectIntent(
   text: string,
@@ -787,7 +786,6 @@ export function detectIntent(
 
 /**
  * Flujo guiado de conversación de pedido.
- * Aquí usamos AI para entender, y el catálogo para dar detalles concretos.
  */
 function buildOrderConversationReply(
   draft: OrderDraft,
@@ -802,9 +800,44 @@ function buildOrderConversationReply(
   const aiReply =
     ((ctx.metadata ?? {}) as any).aiGeneratedReply as string | undefined;
 
-  // 1) Si aún no sabemos qué producto
+  // Intentamos encontrar el producto real en el catálogo
+  const producto = buscarProductoPorTexto(draft.producto || '');
+  const baseMeta = { ...((ctx.metadata ?? {}) as any), orderDraft: draft };
+
+  // ============================================================
+  // 🛡️ VALIDACIÓN DE SEGURIDAD: DETECTAR ALUCINACIONES DE LA IA
+  // ============================================================
+  // Si el borrador dice que hay un producto (ej: "torta de mango")
+  // pero la búsqueda en el catálogo devuelve null, frenamos el pedido.
+  if (draft.producto && !producto) {
+    const draftCorregido = { ...draft, producto: undefined };
+    const menu = buildMenuResumen(3);
+
+    // Ignoramos el aiReply porque la IA probablemente mintió diciendo "Sí tenemos"
+    const reply = 
+      `Mmm... lo siento 😅, pero no encuentro una torta llamada *"${draft.producto}"* en nuestro catálogo actual.` +
+      lineBreak +
+      lineBreak +
+      `Aquí te dejo nuestras opciones disponibles:` +
+      lineBreak +
+      lineBreak +
+      menu +
+      lineBreak +
+      lineBreak +
+      `¿Te gustaría probar alguna de estas?`;
+
+    return {
+      reply,
+      intent,
+      nextState: 'collecting_order_details',
+      needsHuman: false,
+      meta: { ...baseMeta, orderDraft: draftCorregido }
+    };
+  }
+  // ============================================================
+
+  // 1) Si aún no sabemos qué producto (o si fue invalidado arriba)
   if (!draft.producto) {
-    // NUEVO: si ya sabemos para cuántas personas, usamos las sugerencias globales
     if (draft.personas) {
       const sugerencias = sugerirProductosParaPersonas(draft.personas);
       const textoSugerencias = formatearSugerenciasPorciones(
@@ -829,11 +862,10 @@ function buildOrderConversationReply(
         intent,
         nextState: 'collecting_order_details',
         needsHuman: false,
-        meta: { ...((ctx.metadata ?? {}) as any), orderDraft: draft }
+        meta: { ...baseMeta, orderDraft: draft }
       };
     }
 
-    // Comportamiento anterior: pedir qué torta quiere
     const replyBase =
       aiReply && aiReply.trim().length > 0
         ? aiReply
@@ -848,48 +880,11 @@ function buildOrderConversationReply(
       intent,
       nextState: 'collecting_order_details',
       needsHuman: false,
-      meta: { ...((ctx.metadata ?? {}) as any), orderDraft: draft }
+      meta: { ...baseMeta, orderDraft: draft }
     };
   }
 
-  // Intentamos encontrar el producto real en el catálogo
-  const producto = buscarProductoPorTexto(draft.producto);
-  const baseMeta = { ...((ctx.metadata ?? {}) as any), orderDraft: draft };
-
-  // ---------------------------------------------------------
-  // 🚨 NUEVA VALIDACIÓN: Si la IA detectó un nombre, pero no existe en el catálogo
-  // ---------------------------------------------------------
-  if (draft.producto && !producto) {
-    // Borramos el producto inválido del borrador para no arrastrar el error
-    const draftCorregido = { ...draft, producto: undefined };
-    
-    // Generamos el resumen del menú real
-    const menu = buildMenuResumen(3); // Muestra 3 por categoría para no saturar
-
-    const reply = 
-      `Mmm... lo siento 😅, pero no encuentro una torta llamada *"${draft.producto}"* en nuestro catálogo actual.` +
-      lineBreak +
-      lineBreak +
-      `Aquí te dejo nuestras opciones disponibles:` +
-      lineBreak +
-      lineBreak +
-      menu +
-      lineBreak +
-      lineBreak +
-      `¿Te gustaría probar alguna de estas?`;
-
-    return {
-      reply,
-      intent,
-      nextState: 'collecting_order_details',
-      needsHuman: false,
-      // Guardamos el draft SIN el producto inválido
-      meta: { ...baseMeta, orderDraft: draftCorregido }
-    };
-  }
-  // ---------------------------------------------------------
-
-  // 2) Tenemos producto (VALIDADO) pero aún no personas -> mostrar ficha + imagen + preguntar personas
+  // 2) Tenemos producto VALIDADO pero aún no personas
   if (!draft.personas) {
     if (producto) {
       const imageUrl = buildImageUrl(producto.imagen);
@@ -924,15 +919,9 @@ function buildOrderConversationReply(
         ]
       };
     }
-
-    const fallbackReply =
-      (aiReply && aiReply.trim().length > 0
-        ? aiReply + lineBreak
-        : '') +
-      `¿Qué torta te gustaría encargar? Por ejemplo "Torta Alpina" o "Torta Mil Hojas".`;
-
+    // Fallback raro si producto existe pero algo falló
     return {
-      reply: fallbackReply,
+      reply: `¿Para cuántas personas sería la torta?`,
       intent,
       nextState: 'collecting_order_details',
       needsHuman: false,
@@ -1013,7 +1002,7 @@ function buildOrderConversationReply(
     };
   }
 
-  // 4) Si es retiro, pedir dirección para recomendar sucursal
+  // 4) Si es retiro, pedir dirección
   if (draft.deliveryMode === 'retiro' && !draft.direccion) {
     const replyIntro =
       aiReply && aiReply.trim().length > 0
@@ -1034,7 +1023,7 @@ function buildOrderConversationReply(
     };
   }
 
-  // 5) Si ya tenemos dirección pero no sucursal, sugerimos una (por ahora fija)
+  // 5) Si ya tenemos dirección pero no sucursal
   if (draft.deliveryMode === 'retiro' && draft.direccion && !draft.sucursal) {
     draft.sucursal = 'Sucursal Av. Francia ####';
 
