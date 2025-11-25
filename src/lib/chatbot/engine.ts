@@ -362,19 +362,13 @@ function mergeOrderDraft(
 
   // Confirmación simple
   if (
-    n.includes('Esta bien') ||
-    n.includes('Si') ||
-    n.includes('Eso es lo que quiero') ||
-    n.includes('Ya porfavor') ||
-    n.includes('Ya, por favor') ||
-    n.includes('Ya, porfavor') ||
-    n.includes('Si gracias') ||
-    n.includes('Si, esta bien') ||
-    n.includes('Si, por favor') ||
-    n.includes('Ya porfa') ||
-    n.includes('Ok gracias') ||
-    n.includes('Bien') ||
-    n.includes('ok')
+    n.includes('esta bien') ||
+    n.includes('está bien') ||
+    n.includes('eso es lo que quiero') ||
+    n.includes('si, esta bien') ||
+    n.includes('sí, está bien') ||
+    n.includes('ok') ||
+    n.includes('si por favor')
   ) {
     draft.confirmado = true;
   }
@@ -382,14 +376,10 @@ function mergeOrderDraft(
   // Dirección
   if (!draft.direccion) {
     if (
-      n.includes('Av ') ||
       n.includes('av ') ||
       n.includes('avenida') ||
-       n.includes('Avenida') ||
       n.includes('calle') ||
-      n.includes('Calle') ||
-      n.includes('pasaje')||
-      n.includes('Pasaje')
+      n.includes('pasaje')
     ) {
       draft.direccion = ctx.text.trim();
     }
@@ -866,7 +856,40 @@ function buildOrderConversationReply(
   const producto = buscarProductoPorTexto(draft.producto);
   const baseMeta = { ...((ctx.metadata ?? {}) as any), orderDraft: draft };
 
-  // 2) Tenemos producto pero aún no personas -> mostrar ficha + imagen + preguntar personas
+  // ---------------------------------------------------------
+  // 🚨 NUEVA VALIDACIÓN: Si la IA detectó un nombre, pero no existe en el catálogo
+  // ---------------------------------------------------------
+  if (draft.producto && !producto) {
+    // Borramos el producto inválido del borrador para no arrastrar el error
+    const draftCorregido = { ...draft, producto: undefined };
+    
+    // Generamos el resumen del menú real
+    const menu = buildMenuResumen(3); // Muestra 3 por categoría para no saturar
+
+    const reply = 
+      `Mmm... lo siento 😅, pero no encuentro una torta llamada *"${draft.producto}"* en nuestro catálogo actual.` +
+      lineBreak +
+      lineBreak +
+      `Aquí te dejo nuestras opciones disponibles:` +
+      lineBreak +
+      lineBreak +
+      menu +
+      lineBreak +
+      lineBreak +
+      `¿Te gustaría probar alguna de estas?`;
+
+    return {
+      reply,
+      intent,
+      nextState: 'collecting_order_details',
+      needsHuman: false,
+      // Guardamos el draft SIN el producto inválido
+      meta: { ...baseMeta, orderDraft: draftCorregido }
+    };
+  }
+  // ---------------------------------------------------------
+
+  // 2) Tenemos producto (VALIDADO) pero aún no personas -> mostrar ficha + imagen + preguntar personas
   if (!draft.personas) {
     if (producto) {
       const imageUrl = buildImageUrl(producto.imagen);
@@ -1311,7 +1334,11 @@ export async function processMessage(ctx: BotContext): Promise<BotResponse> {
   const ruleIntent = detectIntent(ctx.text, ctx.previousState);
 
   // Intents ultra simples donde la IA no aporta mucho
-  const simpleIntents: IntentId[] = ['greeting', 'goodbye', 'faq_hours'];
+  const simpleIntents: IntentId[] = [
+    'greeting',
+    'goodbye',
+    'faq_hours'
+  ];
 
   if (
     ruleIntent.confidence >= 0.85 &&
