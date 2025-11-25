@@ -17,10 +17,12 @@ function normalize(text: string): string {
 // 1. LISTA BASE Y CATEGORÍAS
 // ============================
 
+// Solo productos disponibles
 export const productosChatbot: Producto[] = productosBase.filter(
   (p) => p.disponible
 );
 
+// Agrupar por categoría
 export function getProductosPorCategoria(
   cat: CategoriaChatbot
 ): Producto[] {
@@ -37,6 +39,7 @@ const clp = new Intl.NumberFormat('es-CL', {
   maximumFractionDigits: 0
 });
 
+// Texto corto de tamaños (para mostrar en el FAQ / menú)
 function formatearTamanosCorto(p: Producto): string {
   if (!p.tamanos?.length) {
     if (p.rindePersonas) {
@@ -51,6 +54,7 @@ function formatearTamanosCorto(p: Producto): string {
   )}`;
 }
 
+// 🧠 Resumen de menú para la intención faq_menu
 export function buildMenuResumen(limitPerCategory = 4): string {
   const categorias: CategoriaChatbot[] = [
     'Bizcocho',
@@ -85,32 +89,36 @@ export function buildMenuResumen(limitPerCategory = 4): string {
 }
 
 // ============================
-// 3. BÚSQUEDA POR TEXTO (MEJORADA)
+// 3. BÚSQUEDA POR TEXTO
 // ============================
 
-// Palabras comunes que NO deben activar una búsqueda por sí solas
 const STOP_WORDS = [
   'torta', 'tortas', 'pastel', 'kuchen', 'pie',
-  'de', 'con', 'el', 'la', 'los', 'las', 'un', 'una',
-  'quiero', 'pedir', 'comprar', 'necesito', 'hay', 'tienen', 'hola'
+  'de', 'con', 'el', 'la', 'los', 'las', 'un', 'una', 'del',
+  'quiero', 'pedir', 'comprar', 'necesito', 'hay', 'tienen', 'hola', 'buenas',
+  'para', 'personas', 'pax', 'prs'
 ];
 
 export function buscarProductoPorTexto(texto: string): Producto | null {
   const n = normalize(texto);
   if (!n) return null;
 
-  // 1) Intento exacto por nombre (prioridad máxima)
+  // 1) Intento exacto por nombre
   let candidato =
     productosChatbot.find((p) => normalize(p.nombre) === n) ?? null;
   if (candidato) return candidato;
 
-  // 2) includes por nombre directo (ej: "torta alpina")
+  // 2) includes por nombre directo
   candidato =
     productosChatbot.find((p) => normalize(p.nombre).includes(n)) ?? null;
   if (candidato) return candidato;
 
-  // 3) Búsqueda por tokens inteligente
-  // Filtramos palabras comunes para que "torta de mango" deje solo "mango"
+  // 3) por slug exacto
+  candidato =
+    productosChatbot.find((p) => normalize(p.slug) === n) ?? null;
+  if (candidato) return candidato;
+
+  // 4) Búsqueda "fuzzy" inteligente por tokens
   const tokens = n.split(/\s+/).filter((t) => 
     t.length >= 3 && !STOP_WORDS.includes(t)
   );
@@ -124,19 +132,14 @@ export function buscarProductoPorTexto(texto: string): Producto | null {
     const descNorm = normalize(p.descripcion);
     const slugNorm = normalize(p.slug);
     
-    // Creamos un target de búsqueda
     const target = `${nombreNorm} ${descNorm} ${slugNorm}`;
-    
     let score = 0;
 
     for (const t of tokens) {
-      // Si el token (ej: "mango") está en el nombre/descripción
       if (target.includes(t)) {
         score += 2;
-        // Bonus si está en el nombre específicamente
         if (nombreNorm.includes(t)) score += 3;
       } 
-      // Tolerancia a errores de tipeo (fuzzy) muy leve
       else if (levenshteinDistance(t, nombreNorm) <= 2) {
         score += 1;
       }
@@ -149,15 +152,12 @@ export function buscarProductoPorTexto(texto: string): Producto | null {
     }
   }
 
-  // Umbral mínimo de coincidencia
   if (!mejor || mejor.score < 2) return null;
   return mejor.p;
 }
 
 function levenshteinDistance(a: string, b: string): number {
-  // Optimización: si la diferencia de longitud es mucha, ni calcular
   if (Math.abs(a.length - b.length) > 3) return 100;
-
   const m = a.length;
   const n = b.length;
   if (m === 0) return n;
@@ -218,13 +218,13 @@ export function formatearDetalleProducto(p: Producto): string {
 }
 
 // =====================================================
-// 5. LÓGICA DE PORCIONES
+// 5. LÓGICA DE PORCIONES (Y LA FUNCIÓN QUE FALTABA)
 // =====================================================
 
 export type VarianteProducto = {
   producto: Producto;
   tamanoId?: string;
-  nombreTamano: string; 
+  nombreTamano: string;
   precio: number;
   personasMin: number;
   personasMax: number;
@@ -252,17 +252,23 @@ function extraerRangoPersonasDesdeNombre(
   if (m) {
     const min = Number(m[1]);
     const max = Number(m[2]);
-    if (min > 0 && max >= min) return { min, max };
+    if (min > 0 && max >= min) {
+      return { min, max };
+    }
   }
   m = clean.match(/hasta\s+(\d+)\s*p/);
   if (m) {
     const max = Number(m[1]);
-    if (max > 0) return { min: Math.max(1, max - 4), max };
+    if (max > 0) {
+      return { min: Math.max(1, max - 4), max };
+    }
   }
   m = clean.match(/(\d+)\s*p/);
   if (m) {
     const n = Number(m[1]);
-    if (n > 0) return { min: n - 2, max: n + 2 };
+    if (n > 0) {
+      return { min: n - 2, max: n + 2 };
+    }
   }
   return null;
 }
@@ -390,4 +396,34 @@ export function formatearSugerenciasPorciones(
   );
 
   return partes.join('\n');
+}
+
+// ✅ ESTA ES LA FUNCIÓN QUE FALTABA
+export function selectTamanoPorPersonas(producto: Producto, personas: number | null): { nombre: string; precio: number } | null {
+  if (!personas || personas <= 0) return null;
+
+  // Usamos la lógica de variantes que ya construimos para buscar el mejor match dentro de ESTE producto
+  const variantes = buildVariantesProductos().filter(v => v.producto.id === producto.id);
+  
+  if (!variantes.length) return null;
+
+  let best = null;
+  let minDiff = Infinity;
+
+  for (const v of variantes) {
+    // Usamos el promedio entre min y max como "tamaño ideal"
+    const avg = (v.personasMin + v.personasMax) / 2;
+    const diff = Math.abs(avg - personas);
+    
+    if (diff < minDiff) {
+      minDiff = diff;
+      best = v;
+    }
+  }
+
+  if (best) {
+    return { nombre: best.nombreTamano, precio: best.precio };
+  }
+  
+  return null;
 }
