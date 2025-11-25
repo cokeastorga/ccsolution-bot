@@ -68,18 +68,19 @@ export interface BotResponse {
 }
 
 /**
- * Borrador de pedido que vamos rellenando paso a paso.
+ * Borrador de pedido.
+ * NOTA: Usamos `| null` en producto para que Firestore no falle si lo limpiamos.
  */
 type OrderDraft = {
-  producto?: string; // "torta alpina"
-  personas?: number; // 12
-  deliveryMode?: DeliveryMode; // 'retiro' | 'delivery'
-  direccion?: string; // "Av Francia..."
-  sucursal?: string; // "Sucursal Av. Francia ####"
-  fechaIso?: string; // "2025-11-21"
-  hora?: string; // "14:00"
-  extras?: string; // "velas + mensaje"
-  confirmado?: boolean; // true cuando el cliente dice "sí, está bien"
+  producto?: string | null;   // <--- CAMBIO IMPORTANTE: acepta null
+  personas?: number;
+  deliveryMode?: DeliveryMode;
+  direccion?: string;
+  sucursal?: string;
+  fechaIso?: string;
+  hora?: string;
+  extras?: string;
+  confirmado?: boolean;
 };
 
 /**
@@ -782,15 +783,11 @@ function buildOrderConversationReply(
   // ============================================================
   // 🛡️ VALIDACIÓN DE SEGURIDAD
   // ============================================================
-  // Si hay un producto en el borrador pero NO se encontró en el catálogo...
   if (draft.producto && !producto) {
-    // 1. Borramos el producto inválido para no arrastrarlo
-    const draftCorregido = { ...draft, producto: undefined };
-    
-    // 2. Generamos el menú real
+    // ✅ SOLUCIÓN: Usamos 'null' en vez de 'undefined'
+    const draftCorregido = { ...draft, producto: null };
     const menu = buildMenuResumen(3);
 
-    // 3. Respondemos con el error amigable
     const reply = 
       `Mmm... lo siento 😅, pero no encuentro una torta llamada *"${draft.producto}"* en nuestro catálogo actual.` +
       lineBreak +
@@ -897,7 +894,6 @@ function buildOrderConversationReply(
       };
     }
     
-    // Fallback: Si el producto desapareció (raro porque ya pasó la validación)
     return {
       reply: `¿Para cuántas personas sería la torta?`,
       intent,
