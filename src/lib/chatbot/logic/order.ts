@@ -55,7 +55,6 @@ function extractSizeKeyword(text: string): 'chico' | 'mediano' | 'grande' | null
 function extractDeliveryMode(text: string): DeliveryMode | null {
   const n = normalize(text);
   if (n.includes('retiro') || n.includes('retirar') || n.includes('local') || n.includes('tienda')) return 'retiro';
-  if (n.includes('delivery') || n.includes('despacho') || n.includes('envio') || n.includes('enviar')) return 'delivery';
   return null;
 }
 
@@ -139,7 +138,6 @@ export function mergeOrderDraft(previous: OrderDraft | undefined, aiSlots: any, 
     if (fromText) draft.personas = fromText;
   }
 
-  if (aiSlots?.deliveryMode === 'retiro' || aiSlots?.deliveryMode === 'delivery') draft.deliveryMode = aiSlots.deliveryMode;
   if (aiSlots?.fechaIso) draft.fechaIso = aiSlots.fechaIso;
 
   const posibleHora = extractTime(ctx.text);
