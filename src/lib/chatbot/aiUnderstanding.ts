@@ -1,6 +1,7 @@
 // src/lib/chatbot/aiUnderstanding.ts
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import type { BotContext, IntentId } from '$lib/chatbot/engine';
+import { env } from '$env/dynamic/private';
 
 // --- Tipos de Datos para Slots y NLU Result ---
 export type AiSlots = {
@@ -20,7 +21,7 @@ export type AiNLUResult = {
 };
 
 // --- Configuración de API ---
-const apiKey = process.env.GEMINI_API_KEY;
+const apiKey = env.GEMINI_API_KEY;
 
 if (!apiKey) {
   console.warn(

@@ -1,96 +1,100 @@
-// src/routes/api/chat/+server.ts  (ejemplo)
 import type { RequestHandler } from './$types';
 import { json } from '@sveltejs/kit';
 import { db } from '$lib/firebase';
-import { doc, getDoc, setDoc, updateDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
 import { processMessage } from '$lib/chatbot/engine';
 
+// Definimos la interfaz aquí para evitar errores de importación
+interface ConversationDoc {
+  state?: string | null;
+  metadata?: Record<string, unknown>;
+  history?: any[];
+  channel?: string;
+  userId?: string | null;
+  createdAt?: any;
+  updatedAt?: any;
+}
+
 export const POST: RequestHandler = async ({ request }) => {
-  const body = await request.json();
+  try {
+    const body = await request.json();
+    const channel = (body.channel ?? 'web') as 'web' | 'whatsapp';
+    const userId = body.userId ?? null;
+    const phone = body.phone ?? null;
+    const text = String(body.text ?? '').trim();
 
-  // 🔑 Identificador de conversación
-  const channel = (body.channel ?? 'web') as 'web' | 'whatsapp';
-  const userId = body.userId ?? null;
-  const phone = body.phone ?? null; // si viene de WhatsApp
-  const text = String(body.text ?? '').trim();
+    if (!text) return json({ error: 'Mensaje vacío' }, { status: 400 });
 
-  if (!text) {
-    return json({ error: 'Empty message' }, { status: 400 });
-  }
+    // ID de conversación
+    const conversationId =
+      channel === 'whatsapp' && phone ? `wa:${phone}` :
+      userId ? `web:${userId}` :
+      `anon:${body.sessionId ?? 'default'}`;
 
-  // Puedes definir conversationId como:
-  // - userId (web logueado)
-  // - phone (whatsapp)
-  const conversationId =
-    channel === 'whatsapp' && phone ? `wa:${phone}` :
-    userId ? `web:${userId}` :
-    `anon:${body.sessionId ?? 'default'}`;
+    console.log(`Processing chat for: ${conversationId}`); // Log para debug
 
-  const ref = doc(db, 'conversations', conversationId);
-  const snap = await getDoc(ref);
+    const ref = doc(db, 'conversations', conversationId);
+    const snap = await getDoc(ref); // <--- AQUÍ suele fallar por permisos
 
-  let conv: ConversationDoc;
+    let conv: ConversationDoc;
 
-  if (!snap.exists()) {
-    conv = {
-      state: null,
-      metadata: {},
-      history: [],
-      channel,
-      userId: userId ?? undefined,
-      createdAt: Date.now(),
-      updatedAt: Date.now()
-    };
-    await setDoc(ref, conv);
-  } else {
-    conv = snap.data() as ConversationDoc;
-  }
-
-  // 🧠 Construimos el contexto para el motor
-  const ctx = {
-    conversationId,
-    userId: userId ?? undefined,
-    channel,
-    text,
-    locale: 'es' as const,
-    previousState: conv.state,
-    metadata: {
-      ...(conv.metadata ?? {}),
-      history: conv.history,
-      settings: {
-        businessName: 'Delicias Porteñas'
-        // puedes meter horarios, mensajes, etc.
-      }
+    if (!snap.exists()) {
+      conv = {
+        state: null,
+        metadata: {},
+        history: [],
+        channel,
+        userId: userId ?? undefined,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp()
+      };
+      await setDoc(ref, conv);
+    } else {
+      conv = snap.data() as ConversationDoc;
     }
-  };
 
-  // 💬 Llamamos al motor (usa IA + catálogo)
-  const response = await processMessage(ctx);
+    // Contexto para el motor
+    const ctx = {
+      conversationId,
+      userId: userId ?? undefined,
+      channel,
+      text,
+      locale: 'es' as const,
+      previousState: conv.state,
+      metadata: {
+        ...(conv.metadata ?? {}),
+        history: conv.history,
+        settings: { businessName: 'Delicias Porteñas' }
+      }
+    };
 
-  // 🧾 Actualizamos historial
-  const newHistory = [
-    ...(conv.history ?? []),
-    { from: 'user' as const, text, ts: Date.now() },
-    { from: 'bot' as const, text: response.reply, ts: Date.now() }
-  ].slice(-40); // por ejemplo, últimos 40 mensajes
+    // Llamada al cerebro del bot
+    const response = await processMessage(ctx);
 
-  // 🧠 Guardamos nuevo estado + metadata (incluye orderDraft)
-  await updateDoc(ref, {
-    state: response.nextState ?? conv.state ?? null,
-    metadata: {
-      ...(conv.metadata ?? {}),
-      ...(response.meta ?? {})
-    },
-    history: newHistory,
-    updatedAt: Date.now()
-  });
+    // Actualizar historial
+    const newHistory = [
+      ...(conv.history ?? []),
+      { from: 'user', text, ts: Date.now() },
+      { from: 'bot', text: response.reply, ts: Date.now() }
+    ].slice(-40);
 
-  // 🔁 Devolvemos lo que el frontend / whatsapp necesita
-  return json({
-    reply: response.reply,
-    media: response.media ?? [],
-    needsHuman: response.needsHuman ?? false,
-    intent: response.intent
-  });
+    await updateDoc(ref, {
+      state: response.nextState ?? conv.state ?? null,
+      metadata: { ...(conv.metadata ?? {}), ...(response.meta ?? {}) },
+      history: newHistory,
+      updatedAt: serverTimestamp()
+    });
+
+    return json({
+      reply: response.reply,
+      media: response.media ?? [],
+      needsHuman: response.needsHuman ?? false,
+      intent: response.intent
+    });
+
+  } catch (error: any) {
+    console.error('❌ ERROR EN API/CHAT:', error);
+    // Devolvemos el error exacto para que lo veas en el navegador (F12 > Network)
+    return json({ error: error.message || 'Error interno del servidor' }, { status: 500 });
+  }
 };
-    
