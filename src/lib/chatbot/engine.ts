@@ -95,9 +95,6 @@ function normalize(text: string): string {
 
 /**
  * Extrae cantidad de personas desde el texto.
- * Soporta cosas como:
- * - "para 20 personas"
- * - "quiero una torta de 15"
  */
 function extractPersonCount(text: string): number | null {
   const re = /(\d{1,3})\s*(personas?|prs|pax)?/gi;
@@ -137,7 +134,6 @@ function extractSizeKeyword(text: string): SizeKeyword | null {
 
 /**
  * Intenta seleccionar un tamaño de producto según cantidad de personas.
- * Asume producto.tamanos = [{ personas: number, precio: number, ... }]
  */
 function selectTamanoPorPersonas(producto: any, personas: number | null) {
   if (!producto || !personas || !Array.isArray(producto.tamanos)) return null;
@@ -187,10 +183,7 @@ function extractDeliveryMode(text: string): DeliveryMode | null {
 }
 
 /**
- * Detección básica de fecha:
- * - hoy / mañana / pasado mañana
- * - lunes/martes/...
- * - "25 de febrero"
+ * Detección básica de fecha
  */
 const MESES = [
   'enero',
@@ -302,12 +295,8 @@ function formatFechaLabel(info: DateInfo | null): string | null {
   return info.raw;
 }
 
-/**
- * Extrae una hora simple tipo "14:00" o "9:30".
- */
 function extractTime(text: string): string | null {
   const n = normalize(text);
-
   const match = /(\d{1,2})[:.](\d{2})/.exec(n);
   if (match) {
     const hh = parseInt(match[1], 10);
@@ -317,13 +306,11 @@ function extractTime(text: string): string | null {
       return `${hhStr}:${mm}`;
     }
   }
-
   return null;
 }
 
 /**
- * Fusiona el borrador previo con los slots devueltos por la IA + texto actual.
- * La IA manda la intención, nosotros usamos catálogo+regex para completar.
+ * Fusiona el borrador previo con los slots devueltos por la IA
  */
 function mergeOrderDraft(
   previous: OrderDraft | undefined,
@@ -393,9 +380,6 @@ function mergeOrderDraft(
   return draft;
 }
 
-/**
- * Construye un resumen de pedido legible.
- */
 function buildOrderSummary(draft: OrderDraft): string {
   const partes: string[] = [];
 
@@ -430,8 +414,7 @@ function buildOrderSummary(draft: OrderDraft): string {
 }
 
 /**
- * Construye una respuesta rica cuando detectamos un producto por texto directo
- * (consulta puntual: "cotizar torta alpina para 10 personas").
+ * Construye una respuesta rica cuando detectamos un producto
  */
 function buildProductoOrderResponse(
   producto: any,
@@ -466,7 +449,6 @@ function buildProductoOrderResponse(
 
   const detalles: string[] = [];
 
-  // Sugerencia de tamaño según personas
   if (personas && Array.isArray(producto.tamanos) && producto.tamanos.length > 0) {
     const maxTamano = producto.tamanos.reduce(
       (max: any, t: any) =>
@@ -578,9 +560,6 @@ function buildProductoOrderResponse(
   };
 }
 
-/**
- * Regla simple de detección de intención basada en keywords.
- */
 export function detectIntent(
   text: string,
   previousState?: string | null
@@ -784,9 +763,6 @@ export function detectIntent(
   };
 }
 
-/**
- * Flujo guiado de conversación de pedido.
- */
 function buildOrderConversationReply(
   draft: OrderDraft,
   ctx: BotContext,
@@ -800,20 +776,21 @@ function buildOrderConversationReply(
   const aiReply =
     ((ctx.metadata ?? {}) as any).aiGeneratedReply as string | undefined;
 
-  // Intentamos encontrar el producto real en el catálogo
   const producto = buscarProductoPorTexto(draft.producto || '');
   const baseMeta = { ...((ctx.metadata ?? {}) as any), orderDraft: draft };
 
   // ============================================================
-  // 🛡️ VALIDACIÓN DE SEGURIDAD: DETECTAR ALUCINACIONES DE LA IA
+  // 🛡️ VALIDACIÓN DE SEGURIDAD
   // ============================================================
-  // Si el borrador dice que hay un producto (ej: "torta de mango")
-  // pero la búsqueda en el catálogo devuelve null, frenamos el pedido.
+  // Si hay un producto en el borrador pero NO se encontró en el catálogo...
   if (draft.producto && !producto) {
+    // 1. Borramos el producto inválido para no arrastrarlo
     const draftCorregido = { ...draft, producto: undefined };
+    
+    // 2. Generamos el menú real
     const menu = buildMenuResumen(3);
 
-    // Ignoramos el aiReply porque la IA probablemente mintió diciendo "Sí tenemos"
+    // 3. Respondemos con el error amigable
     const reply = 
       `Mmm... lo siento 😅, pero no encuentro una torta llamada *"${draft.producto}"* en nuestro catálogo actual.` +
       lineBreak +
@@ -836,7 +813,7 @@ function buildOrderConversationReply(
   }
   // ============================================================
 
-  // 1) Si aún no sabemos qué producto (o si fue invalidado arriba)
+  // 1) Si aún no sabemos qué producto
   if (!draft.producto) {
     if (draft.personas) {
       const sugerencias = sugerirProductosParaPersonas(draft.personas);
@@ -862,7 +839,7 @@ function buildOrderConversationReply(
         intent,
         nextState: 'collecting_order_details',
         needsHuman: false,
-        meta: { ...baseMeta, orderDraft: draft }
+        meta: { ...((ctx.metadata ?? {}) as any), orderDraft: draft }
       };
     }
 
@@ -880,7 +857,7 @@ function buildOrderConversationReply(
       intent,
       nextState: 'collecting_order_details',
       needsHuman: false,
-      meta: { ...baseMeta, orderDraft: draft }
+      meta: { ...((ctx.metadata ?? {}) as any), orderDraft: draft }
     };
   }
 
@@ -919,7 +896,8 @@ function buildOrderConversationReply(
         ]
       };
     }
-    // Fallback raro si producto existe pero algo falló
+    
+    // Fallback: Si el producto desapareció (raro porque ya pasó la validación)
     return {
       reply: `¿Para cuántas personas sería la torta?`,
       intent,
@@ -1143,18 +1121,10 @@ function buildOrderConversationReply(
   };
 }
 
-/**
- * Respuestas de texto "clásicas" cuando no necesitamos IA para el flujo.
- */
 export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
-  const locale = ctx.locale ?? 'es';
   const isWhatsApp = ctx.channel === 'whatsapp';
-
-  const settings = (((ctx.metadata ?? {}) as any).settings ??
-    {}) as SettingsMeta;
-
+  const settings = (((ctx.metadata ?? {}) as any).settings ?? {}) as SettingsMeta;
   const businessName = settings.businessName ?? 'Delicias Porteñas';
-
   const lineBreak = isWhatsApp ? '\n' : '\n';
 
   let reply = '';
@@ -1163,140 +1133,60 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
 
   switch (intent.id) {
     case 'greeting': {
-      if (settings.messages?.welcome) {
-        reply = settings.messages.welcome;
-      } else {
-        reply =
-          `¡Hola! 👋 Soy Edu, el asistente virtual de ${businessName}.` +
-          lineBreak +
-          `Puedo ayudarte a:` +
-          lineBreak +
-          `• Hacer un pedido` +
-          lineBreak +
-          `• Consultar horarios o productos` +
-          lineBreak +
-          `• Derivarte con una persona del equipo`;
-      }
+      reply = settings.messages?.welcome ??
+        `¡Hola! 👋 Soy Edu, el asistente virtual de ${businessName}.\nPuedo ayudarte a hacer pedidos y consultar productos.`;
       nextState = 'idle';
       break;
     }
-
     case 'smalltalk': {
-      reply =
-        `Estoy aquí para ayudarte con tus pedidos y consultas 😊` +
-        lineBreak +
-        `Si quieres, puedes decirme por ejemplo: "Quiero hacer un pedido" o "¿Cuáles son los horarios?"`;
+      reply = `Estoy aquí para ayudarte con tus pedidos y consultas 😊\nSi quieres, puedes decirme: "Quiero hacer un pedido".`;
       nextState = 'idle';
       break;
     }
-
     case 'order_start': {
       const producto = buscarProductoPorTexto(ctx.text);
-
       if (producto) {
         return buildProductoOrderResponse(producto, ctx, intent, lineBreak);
       }
-
-      reply =
-        `Perfecto, iniciemos tu pedido 🧁` +
-        lineBreak +
-        `¿Qué te gustaría pedir? Puedes decir algo como:` +
-        lineBreak +
-        `• "Torta Alpina para 20 personas"` +
-        lineBreak +
-        `• "Torta Mil Hojas para el viernes"` +
-        lineBreak +
-        `• "Torta de Frambuesa para 12 personas"` +
-        lineBreak +
-        `Y dime también si es para *retiro* o *delivery*.`; 
+      reply = `Perfecto, iniciemos tu pedido 🧁\n¿Qué te gustaría pedir? (ej: "Torta Alpina", "Torta Mil Hojas").`; 
       nextState = 'collecting_order_details';
       break;
     }
-
     case 'order_status': {
-      reply =
-        `Para revisar el estado de tu pedido necesito algún dato de referencia 🧾` +
-        lineBreak +
-        `Por ejemplo: número de pedido, nombre y fecha aproximada en que lo hiciste.`;
+      reply = `Para revisar el estado de tu pedido necesito algún dato de referencia 🧾`;
       nextState = 'awaiting_order_reference';
       break;
     }
-
     case 'faq_hours': {
       const h = settings.hours ?? {};
-      reply =
-        `Te cuento los horarios de ${businessName}:` +
-        lineBreak +
-        `🕒 Lunes a viernes: ${h.weekdays ?? '08:00 – 19:00'}` +
-        lineBreak +
-        `🕒 Sábados: ${h.saturday ?? '10:00 – 19:00'}` +
-        lineBreak +
-        `${
-          h.sunday ??
-          'Domingos y festivos: según disponibilidad (puedes consultar por aquí).'
-        }`;
+      reply = `Horarios de ${businessName}:\nL-V: ${h.weekdays}\nSáb: ${h.saturday}\n${h.sunday}`;
       nextState = ctx.previousState ?? 'idle';
       break;
     }
-
     case 'faq_menu': {
       const resumen = buildMenuResumen(4);
-
-      reply =
-        `Te comparto un resumen de nuestras tortas y productos de ${businessName} 🍰` +
-        lineBreak +
-        lineBreak +
-        resumen +
-        lineBreak +
-        lineBreak +
-        `Si quieres, dime el *nombre de la torta* (por ejemplo: "Torta Selva Negra", "Torta Alpina" o "Torta Mil Hojas") y para cuántas personas, y te ayudo a cotizar.`;
+      reply = `Te comparto nuestras tortas 🍰\n\n${resumen}\n\nDime cuál te interesa cotizar.`;
       nextState = ctx.previousState ?? 'idle';
       break;
     }
-
     case 'handoff_human': {
-      if (settings.messages?.handoff) {
-        reply = settings.messages.handoff;
-      } else {
-        reply =
-          `Claro, puedo derivar tu consulta a una persona del equipo 👤` +
-          lineBreak +
-          `En unos momentos alguien te responderá manualmente.` +
-          lineBreak +
-          `Si quieres, cuéntame antes un poco más de tu consulta para adelantar información.`;
-      }
+      reply = settings.messages?.handoff ?? `Derivo tu consulta a una persona del equipo 👤.`;
       nextState = 'handoff_requested';
       needsHuman = true;
       break;
     }
-
     case 'goodbye': {
-      if (settings.messages?.closing) {
-        reply = settings.messages.closing;
-      } else {
-        reply =
-          `¡Gracias por escribirnos! 🙌` +
-          lineBreak +
-          `Si más adelante necesitas hacer un pedido o resolver una duda, puedes hablarme de nuevo cuando quieras.`;
-      }
+      reply = settings.messages?.closing ?? `¡Gracias! Si necesitas algo más, aquí estaré.`;
       nextState = 'ended';
       break;
     }
-
     case 'fallback':
     default: {
       const producto = buscarProductoPorTexto(ctx.text);
-
       if (producto) {
         return buildProductoOrderResponse(producto, ctx, intent, lineBreak);
       }
-
-      reply =
-        `No estoy seguro de haber entendido del todo 🤔` +
-        lineBreak +
-        `Puedo ayudarte con pedidos, horarios, productos o derivarte con una persona del equipo.` +
-        lineBreak +
-        `¿Podrías explicarme de otra forma o decir, por ejemplo: "Quiero hacer un pedido"?`;
+      reply = `No entendí bien 🤔. ¿Podrías decirme, por ejemplo: "Quiero hacer un pedido"?`;
       nextState = ctx.previousState ?? 'idle';
       break;
     }
@@ -1309,44 +1199,28 @@ export function buildReply(intent: IntentMatch, ctx: BotContext): BotResponse {
     needsHuman,
     meta: {
       channel: ctx.channel,
-      locale,
+      locale: ctx.locale ?? 'es',
       previousState: ctx.previousState ?? null
     }
   };
 }
 
-/**
- * Función de alto nivel: recibe un contexto, llama a la IA,
- * hace merge con el catálogo y construye la respuesta final.
- */
 export async function processMessage(ctx: BotContext): Promise<BotResponse> {
   const ruleIntent = detectIntent(ctx.text, ctx.previousState);
+  const simpleIntents: IntentId[] = ['greeting', 'goodbye', 'faq_hours'];
 
-  // Intents ultra simples donde la IA no aporta mucho
-  const simpleIntents: IntentId[] = [
-    'greeting',
-    'goodbye',
-    'faq_hours'
-  ];
-
-  if (
-    ruleIntent.confidence >= 0.85 &&
-    simpleIntents.includes(ruleIntent.id)
-  ) {
+  if (ruleIntent.confidence >= 0.85 && simpleIntents.includes(ruleIntent.id)) {
     return buildReply(ruleIntent, ctx);
   }
 
   let aiResult: AiNLUResult | null = null;
-
   try {
     aiResult = await aiUnderstand(ctx, ruleIntent.id);
   } catch (err) {
     console.error('❌ Error en aiUnderstand:', err);
   }
 
-  // Si la IA dice algo útil
   if (aiResult && aiResult.intentId) {
-    // Si detecta producto, priorizamos flujo de pedido
     if (aiResult.slots?.producto) {
       aiResult.intentId = 'order_start';
       aiResult.confidence = 0.99;
@@ -1355,12 +1229,10 @@ export async function processMessage(ctx: BotContext): Promise<BotResponse> {
     const intent: IntentMatch = {
       id: aiResult.intentId,
       confidence: aiResult.confidence ?? 0.9,
-      reason: `IA NLU (antes: ${ruleIntent.id} ${ruleIntent.confidence})`
+      reason: `IA NLU`
     };
 
-    const previousDraft =
-      ((ctx.metadata ?? {}) as any).orderDraft as OrderDraft | undefined;
-
+    const previousDraft = ((ctx.metadata ?? {}) as any).orderDraft as OrderDraft | undefined;
     const mergedDraft = mergeOrderDraft(previousDraft, aiResult.slots, ctx);
 
     const enhancedCtx: BotContext = {
@@ -1376,29 +1248,17 @@ export async function processMessage(ctx: BotContext): Promise<BotResponse> {
 
     const lineBreak = enhancedCtx.channel === 'whatsapp' ? '\n' : '\n';
 
-    // Si estamos en pedido, usamos el flujo guiado con catálogo
-    if (
-      intent.id === 'order_start' ||
-      enhancedCtx.previousState === 'collecting_order_details'
-    ) {
-      return buildOrderConversationReply(
-        mergedDraft,
-        enhancedCtx,
-        intent,
-        lineBreak
-      );
+    if (intent.id === 'order_start' || enhancedCtx.previousState === 'collecting_order_details') {
+      return buildOrderConversationReply(mergedDraft, enhancedCtx, intent, lineBreak);
     }
 
     const response = buildReply(intent, enhancedCtx);
-
     if (aiResult.needsHuman) {
       response.needsHuman = true;
       response.nextState = 'handoff_requested';
     }
-
     return response;
   }
 
-  // Si la IA falla, volvemos a las reglas
   return buildReply(ruleIntent, ctx);
 }

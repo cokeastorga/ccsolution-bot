@@ -17,12 +17,12 @@ function normalize(text: string): string {
 // 1. LISTA BASE Y CATEGORÍAS
 // ============================
 
-// Solo productos disponibles (mantiene el nombre antiguo para no romper nada)
+// Solo productos disponibles
 export const productosChatbot: Producto[] = productosBase.filter(
   (p) => p.disponible
 );
 
-// Agrupar por categoría (API existente)
+// Agrupar por categoría
 export function getProductosPorCategoria(
   cat: CategoriaChatbot
 ): Producto[] {
@@ -55,7 +55,6 @@ function formatearTamanosCorto(p: Producto): string {
 }
 
 // 🧠 Resumen de menú para la intención faq_menu
-// Mantiene firma original: (limitPerCategory?: number)
 export function buildMenuResumen(limitPerCategory = 4): string {
   const categorias: CategoriaChatbot[] = [
     'Bizcocho',
@@ -93,56 +92,89 @@ export function buildMenuResumen(limitPerCategory = 4): string {
 // 3. BÚSQUEDA POR TEXTO (MEJORADA)
 // ============================
 
-// 🔍 Buscar 1 producto por texto del usuario (mantiene el tipo: Producto | null)
+// 🛑 Palabras comunes que NO deben activar una coincidencia por sí solas.
+// Esto evita que "Quiero una torta" coincida con cualquier producto solo por la palabra "torta".
+const STOP_WORDS = [
+  'torta', 'tortas', 'pastel', 'kuchen', 'pie',
+  'de', 'con', 'el', 'la', 'los', 'las', 'un', 'una', 'del',
+  'quiero', 'pedir', 'comprar', 'necesito', 'hay', 'tienen', 'hola', 'buenas',
+  'para', 'personas', 'pax', 'prs'
+];
+
+// 🔍 Buscar 1 producto por texto del usuario
 export function buscarProductoPorTexto(texto: string): Producto | null {
   const n = normalize(texto);
   if (!n) return null;
 
-  // 1) Intento exacto por nombre
+  // 1) Intento exacto por nombre (prioridad máxima)
   let candidato =
     productosChatbot.find((p) => normalize(p.nombre) === n) ?? null;
   if (candidato) return candidato;
 
-  // 2) includes por nombre
+  // 2) includes por nombre directo (ej: si escribe "torta alpina" exacto dentro de una frase larga)
   candidato =
     productosChatbot.find((p) => normalize(p.nombre).includes(n)) ?? null;
   if (candidato) return candidato;
 
-  // 3) por slug
+  // 3) por slug exacto
   candidato =
     productosChatbot.find((p) => normalize(p.slug) === n) ?? null;
   if (candidato) return candidato;
 
-  candidato =
-    productosChatbot.find((p) => normalize(p.slug).includes(n)) ?? null;
-  if (candidato) return candidato;
-
-  // 4) Búsqueda "fuzzy" simple por tokens (para tolerar cosas como "alpima", "mil ojas", etc.)
-  const tokens = n.split(/\s+/).filter((t) => t.length >= 3);
+  // 4) Búsqueda "fuzzy" inteligente por tokens
+  // Filtramos las STOP_WORDS para quedarnos solo con lo importante (ej: "mango" en vez de "torta de mango")
+  const tokens = n.split(/\s+/).filter((t) => 
+    t.length >= 3 && !STOP_WORDS.includes(t)
+  );
+  
+  // Si después de filtrar no queda nada (ej: el usuario solo escribió "quiero una torta"), no buscamos nada.
   if (!tokens.length) return null;
 
   let mejor: { p: Producto; score: number } | null = null;
 
   for (const p of productosChatbot) {
-    const target = `${normalize(p.nombre)} ${normalize(p.descripcion)} ${normalize(p.slug)}`;
+    const nombreNorm = normalize(p.nombre);
+    const descNorm = normalize(p.descripcion);
+    const slugNorm = normalize(p.slug);
+    
+    // Creamos un "target" de búsqueda que incluye nombre y descripción
+    const target = `${nombreNorm} ${descNorm} ${slugNorm}`;
+    
     let score = 0;
 
     for (const t of tokens) {
-      if (target.includes(t)) score += 2;
-      else if (levenshteinDistance(t, target) <= 2) score += 1;
+      // Si el token (ej: "mango") está en el target
+      if (target.includes(t)) {
+        score += 2;
+        // Bonus extra si está específicamente en el nombre principal
+        if (nombreNorm.includes(t)) score += 3;
+      } 
+      // Tolerancia a errores de tipeo (fuzzy) leve
+      else if (levenshteinDistance(t, nombreNorm) <= 2) {
+        score += 1;
+      }
     }
 
-    if (!mejor || score > mejor.score) {
-      mejor = { p, score };
+    // Guardamos el mejor candidato
+    if (score > 0) {
+      if (!mejor || score > mejor.score) {
+        mejor = { p, score };
+      }
     }
   }
 
-  if (!mejor || mejor.score <= 0) return null;
+  // Umbral mínimo de coincidencia.
+  // score >= 2 ayuda a asegurar que al menos hubo una coincidencia fuerte o dos débiles.
+  if (!mejor || mejor.score < 2) return null;
+  
   return mejor.p;
 }
 
-// Distancia de Levenshtein muy simple, suficiente para "alpima" → "alpina"
+// Distancia de Levenshtein para tolerancia a errores de escritura
 function levenshteinDistance(a: string, b: string): number {
+  // Optimización: si la diferencia de longitud es mucha, ni calcular
+  if (Math.abs(a.length - b.length) > 3) return 100;
+
   const m = a.length;
   const n = b.length;
 
@@ -175,7 +207,7 @@ function levenshteinDistance(a: string, b: string): number {
 // 4. FICHA DETALLADA PRODUCTO
 // ============================
 
-// 📄 Ficha detallada para WhatsApp (misma API que tenías)
+// 📄 Ficha detallada para WhatsApp
 export function formatearDetalleProducto(p: Producto): string {
   const base =
     `*${p.nombre}*` +
@@ -229,7 +261,7 @@ export type SugerenciaPorciones = {
   totalPrecio: number;
 };
 
-// Intenta extraer "10-15p", "20–25p", "10 a 15p", "hasta 12p", etc. desde el nombre del tamaño
+// Intenta extraer "10-15p", "20–25p", "10 a 15p", "hasta 12p"
 function extraerRangoPersonasDesdeNombre(
   nombre: string
 ): { min: number; max: number } | null {
@@ -327,14 +359,6 @@ export function buildVariantesProductos(): VarianteProducto[] {
 
 /**
  * Sugerir combinaciones para una cantidad de personas.
- *
- * Estrategia simple:
- * - Para cada variante calculamos cuántas unidades necesitamos
- *   usando personasMax (para no quedarnos cortos).
- * - Devolvemos las mejores sugerencias (menor "sobrante" y menor precio).
- *
- * Ejemplo: si una variante es 20–25p y piden 40:
- *   personasMax = 25 → ceil(40 / 25) = 2 → sugerimos 2 tortas de ese tamaño.
  */
 export function sugerirProductosParaPersonas(
   personasSolicitadas: number,
