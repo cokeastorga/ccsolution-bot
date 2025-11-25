@@ -55,6 +55,7 @@ function extractSizeKeyword(text: string): 'chico' | 'mediano' | 'grande' | null
 function extractDeliveryMode(text: string): DeliveryMode | null {
   const n = normalize(text);
   if (n.includes('retiro') || n.includes('retirar') || n.includes('local') || n.includes('tienda')) return 'retiro';
+  if (n.includes('delivery') || n.includes('despacho') || n.includes('envio') || n.includes('enviar')) return 'delivery';
   return null;
 }
 
@@ -117,12 +118,32 @@ function formatFechaLabel(info: DateInfo | null): string | null {
 
 function extractTime(text: string): string | null {
   const n = normalize(text);
-  const match = /(\d{1,2})[:.](\d{2})/.exec(n);
+  
+  // 1. Intento HH:MM o H.MM (ej: 14:30, 9.00)
+  let match = /(\d{1,2})[:.](\d{2})/.exec(n);
   if (match) {
     const hh = parseInt(match[1], 10);
     const mm = match[2];
     if (hh >= 0 && hh <= 23) return `${hh.toString().padStart(2, '0')}:${mm}`;
   }
+
+  // 2. Intento formato "2 de la tarde", "14 hrs", "5 pm"
+  // Busca un número solo (1 o 2 dígitos) seguido de palabras clave opcionales
+  match = /(\d{1,2})\s*(hrs|horas|h|pm|am|de la tarde|de la manana)?/.exec(n);
+  if (match) {
+    let hh = parseInt(match[1], 10);
+    const suffix = match[2] || '';
+    
+    // Si dice "2 de la tarde" o "2 pm", sumamos 12
+    if ((suffix.includes('pm') || suffix.includes('tarde')) && hh < 12) {
+      hh += 12;
+    }
+    
+    if (hh >= 0 && hh <= 23) {
+      return `${hh.toString().padStart(2, '0')}:00`;
+    }
+  }
+
   return null;
 }
 
@@ -138,6 +159,7 @@ export function mergeOrderDraft(previous: OrderDraft | undefined, aiSlots: any, 
     if (fromText) draft.personas = fromText;
   }
 
+  if (aiSlots?.deliveryMode === 'retiro' || aiSlots?.deliveryMode === 'delivery') draft.deliveryMode = aiSlots.deliveryMode;
   if (aiSlots?.fechaIso) draft.fechaIso = aiSlots.fechaIso;
 
   const posibleHora = extractTime(ctx.text);
@@ -148,11 +170,26 @@ export function mergeOrderDraft(previous: OrderDraft | undefined, aiSlots: any, 
     draft.confirmado = true;
   }
 
-  if (!draft.direccion && (n.includes('av ') || n.includes('calle') || n.includes('pasaje'))) {
+  // Detección de Dirección mejorada
+  if (!draft.direccion && (
+    n.includes('av ') || n.includes('calle') || n.includes('pasaje') || 
+    n.includes('condominio') || n.includes('villa') || n.includes('poblacion') || n.includes('sector')
+  )) {
     draft.direccion = ctx.text.trim();
   }
-  if (!draft.extras && (n.includes('vela') || n.includes('mensaje'))) {
-    draft.extras = ctx.text.trim();
+
+  // Detección de Extras + Negación (SOLUCIÓN AL BUCLE)
+  if (!draft.extras) {
+    if (n.includes('vela') || n.includes('mensaje') || n.includes('tarjeta')) {
+      draft.extras = ctx.text.trim();
+    } 
+    // Si dice que NO quiere nada
+    else if (
+      n === 'no' || n === 'nada' || n === 'ninguno' || 
+      n.includes('nada mas') || n.includes('no gracias') || n.includes('ningun')
+    ) {
+      draft.extras = 'Ninguno';
+    }
   }
 
   return draft;
@@ -171,7 +208,6 @@ export function buildOrderSummary(draft: OrderDraft): string {
   return partes.join('\n');
 }
 
-// ⚠️ NOTA: Función Async para soportar llamada a IA de geolocalización
 export async function buildProductOrderResponse(
   producto: Producto | null,
   draft: OrderDraft,
@@ -183,7 +219,6 @@ export async function buildProductOrderResponse(
   const baseMeta = { ...((ctx.metadata ?? {}) as any), orderDraft: draft };
 
   // 🛡️ VALIDACIÓN DE ALUCINACIONES
-  // Si el draft tiene producto pero 'producto' es null (no encontrado en catálogo)
   if (draft.producto && !producto) {
     const draftCorregido = { ...draft, producto: null };
     const menu = buildMenuResumen(3);
@@ -257,7 +292,7 @@ export async function buildProductOrderResponse(
     };
   }
 
-  // 4. Si es retiro pero falta dirección -> Pedimos dirección para calcular sucursal
+  // 4. Si es retiro pero falta dirección
   if (draft.deliveryMode === 'retiro' && !draft.direccion) {
     return { 
       reply: `Perfecto, retiro en local ✅\n¿En qué sector o dirección te encuentras? Así calculo cuál sucursal te queda más cerca.`, 
@@ -268,10 +303,9 @@ export async function buildProductOrderResponse(
     };
   }
 
-  // 5. Si es retiro, hay dirección pero no sucursal -> USAR IA PARA GEOLOCALIZAR 📍
+  // 5. Si es retiro, hay dirección pero no sucursal -> USAR IA
   if (draft.deliveryMode === 'retiro' && draft.direccion && !draft.sucursal) {
     
-    // Llamada a la IA para encontrar la tienda más cercana
     const tiendaSugerida = await findNearestStoreWithAI(draft.direccion);
     draft.sucursal = tiendaSugerida.nombre;
 
