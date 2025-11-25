@@ -19,7 +19,6 @@ import {
 
 /**
  * Estructura mínima de la conversación en Firestore.
- * Firestore es schemaless, esto es solo para tipos.
  */
 type HistoryItem = {
   from: 'user' | 'bot';
@@ -37,13 +36,12 @@ type ConversationDoc = {
   updatedAt?: unknown;
 };
 
-// GET → verificación inicial del webhook con Meta
+// GET → Verificación del webhook
 export const GET: RequestHandler = async ({ url }) => {
   const mode = url.searchParams.get('hub.mode');
   const token = url.searchParams.get('hub.verify_token');
   const challenge = url.searchParams.get('hub.challenge');
 
-  // Leemos settings para usar el verifyToken configurado
   const settings = await getGlobalSettings();
   const VERIFY_TOKEN = settings.whatsapp.verifyToken || 'mi_token_seguro';
 
@@ -52,11 +50,10 @@ export const GET: RequestHandler = async ({ url }) => {
     return new Response(challenge, { status: 200 });
   }
 
-  console.warn('❌ Verificación de webhook fallida');
   return new Response('Forbidden', { status: 403 });
 };
 
-// POST → mensajes entrantes de WhatsApp
+// POST → Mensajes entrantes
 export const POST: RequestHandler = async ({ request }) => {
   const body = await request.json().catch(() => null);
 
@@ -64,12 +61,12 @@ export const POST: RequestHandler = async ({ request }) => {
     return json({ ok: false, error: 'Invalid JSON' }, { status: 400 });
   }
 
-  // Config global (tokens, phoneNumberId, etc.)
+  // Config global
   const settings = await getGlobalSettings();
   const whatsappCfg = settings.whatsapp;
 
   // ----------------------------------------------------------------
-  // 1) Parsear payload de WhatsApp Cloud API
+  // 1) Parsear payload de WhatsApp
   // ----------------------------------------------------------------
   try {
     const entry = body.entry?.[0];
@@ -78,19 +75,17 @@ export const POST: RequestHandler = async ({ request }) => {
     const messages = value?.messages ?? [];
 
     if (!messages.length) {
-      // Puede ser un evento de status, etc.
-      return json({ ok: true, skip: 'No messages in payload' });
+      return json({ ok: true, skip: 'No messages' });
     }
 
     const message = messages[0];
 
-    // Solo manejamos texto por ahora
     if (message.type !== 'text') {
-      console.log('ℹ️ Mensaje ignorado (no es texto):', message.type);
+      console.log('ℹ️ Ignorado (no texto):', message.type);
       return json({ ok: true, ignored: true });
     }
 
-    const fromPhone: string = message.from; // número del cliente
+    const fromPhone: string = message.from;
     const text: string = message.text?.body ?? '';
 
     if (!text.trim()) {
@@ -98,7 +93,7 @@ export const POST: RequestHandler = async ({ request }) => {
     }
 
     // ----------------------------------------------------------------
-    // 2) Cargar / crear conversación en Firestore
+    // 2) Cargar / Crear Conversación en Firestore
     // ----------------------------------------------------------------
     const channel: Channel = 'whatsapp';
     const conversationId = `wa:${fromPhone}`;
@@ -118,22 +113,18 @@ export const POST: RequestHandler = async ({ request }) => {
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp()
       };
-
       await setDoc(convRef, convData);
-      console.log('🆕 Nueva conversación creada:', conversationId);
+      console.log('🆕 Nueva conversación:', conversationId);
     } else {
       convData = (convSnap.data() as ConversationDoc) || {};
     }
 
     const previousState = convData.state ?? null;
     const previousMetadata = convData.metadata ?? {};
-    const previousHistory = convData.history ?? [];
-
-    // Historial corto para la IA (no más de ~40 mensajes)
-    const history: HistoryItem[] = previousHistory.slice(-40);
+    const history: HistoryItem[] = (convData.history ?? []).slice(-40);
 
     // ----------------------------------------------------------------
-    // 3) Construir BotContext y llamar al motor (IA + catálogo)
+    // 3) Motor del Chatbot (IA + Lógica)
     // ----------------------------------------------------------------
     const ctx: BotContext = {
       conversationId,
@@ -145,14 +136,14 @@ export const POST: RequestHandler = async ({ request }) => {
       metadata: {
         ...previousMetadata,
         history,
-        settings // le pasamos todos los settings al motor
+        settings
       }
     };
 
     const botResponse = await processMessage(ctx);
 
     // ----------------------------------------------------------------
-    // 4) Actualizar conversación en Firestore (estado + metadata + history)
+    // 4) Actualizar Firestore
     // ----------------------------------------------------------------
     const newHistory: HistoryItem[] = [
       ...history,
@@ -179,12 +170,14 @@ export const POST: RequestHandler = async ({ request }) => {
     });
 
     // ----------------------------------------------------------------
-    // 5) Si el motor pidió handoff, crear pedido en /orders y notificar a humano
+    // 5) NOTIFICACIÓN AL STAFF (ATENCIÓN PROACTIVA)
+    //    Si needsHuman es true, avisamos al equipo con link directo.
     // ----------------------------------------------------------------
-    if (botResponse.needsHuman && botResponse.nextState === 'handoff_requested') {
+    if (botResponse.needsHuman) {
+      
       const orderDraft = (botResponse.meta as any)?.orderDraft;
 
-      // 5.1) Guardar pedido en colección /orders
+      // 5.1) Si es un pedido, guardarlo en la colección /orders
       if (orderDraft) {
         const orderId = `${conversationId}-${Date.now()}`;
         const orderRef = doc(db, 'orders', orderId);
@@ -195,25 +188,19 @@ export const POST: RequestHandler = async ({ request }) => {
           channel,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
-          status: 'pending', // pending | confirmed | delivered | canceled
-
+          status: 'pending',
           draft: orderDraft,
           resumen: {
             producto: orderDraft.producto ?? null,
             personas: orderDraft.personas ?? null,
             fecha: orderDraft.fechaIso ?? null,
-            hora: orderDraft.hora ?? null,
-            deliveryMode: orderDraft.deliveryMode ?? null,
-            direccion: orderDraft.direccion ?? null,
-            sucursal: orderDraft.sucursal ?? null,
-            extras: orderDraft.extras ?? null
+            // ... otros campos útiles
           }
         });
-
-        console.log('📦 Pedido guardado en /orders:', orderId);
+        console.log('📦 Pedido guardado:', orderId);
       }
 
-      // 5.2) Notificar a los teléfonos internos configurados
+      // 5.2) Enviar WhatsApp al Staff
       try {
         const notifyPhones = (whatsappCfg.notificationPhones ?? '')
           .split(',')
@@ -231,138 +218,112 @@ export const POST: RequestHandler = async ({ request }) => {
             Authorization: `Bearer ${whatsappCfg.accessToken}`
           };
 
+          // Construir el mensaje para el Staff
+          let staffMessageBody = '';
+
+          if (orderDraft) {
+            // Caso: Pedido Nuevo
+            staffMessageBody = 
+              `📦 *NUEVO PEDIDO CONFIRMADO*\n\n` +
+              `Cliente: ${fromPhone}\n` +
+              `Detalles:\n${botResponse.reply}\n\n` + // Usamos la respuesta del bot como resumen
+              `👉 *Haz clic aquí para responderle:* https://wa.me/${fromPhone}`;
+          } else {
+            // Caso: Solicitud de Ayuda General
+            staffMessageBody = 
+              `👤 *SOLICITUD DE ATENCIÓN HUMANA*\n\n` +
+              `El cliente ${fromPhone} pide hablar con alguien.\n` +
+              `Último mensaje: "${text}"\n\n` +
+              `👉 *Haz clic aquí para responderle:* https://wa.me/${fromPhone}`;
+          }
+
+          // Enviar a todos los números configurados
           for (const adminPhone of notifyPhones) {
+            if (adminPhone.length < 8) continue; // Validación básica
+
             const adminPayload = {
               messaging_product: 'whatsapp',
               to: adminPhone,
               type: 'text' as const,
-              text: {
-                body:
-                  `📥 *Nuevo pedido pendiente de confirmación*\n` +
-                  `Cliente: ${fromPhone}\n\n` +
-                  `${botResponse.reply}\n\n` +
-                  `👉 Responde directamente al cliente para continuar la atención.`
-              }
+              text: { body: staffMessageBody }
             };
 
-            const adminRes = await fetch(adminUrl, {
+            await fetch(adminUrl, {
               method: 'POST',
               headers: adminHeaders,
               body: JSON.stringify(adminPayload)
-            });
-
-            if (!adminRes.ok) {
-              const errBody = await adminRes.text();
-              console.error(
-                '❌ Error enviando notificación de pedido a admin:',
-                errBody
-              );
-            } else {
-              console.log('✅ Notificación de pedido enviada a admin:', adminPhone);
-            }
+            }).catch(err => console.error(`Error notificando a ${adminPhone}:`, err));
           }
+          console.log('🔔 Staff notificado (Proactive Attention).');
         }
       } catch (err) {
-        console.error('⚠️ Error notificando a admin por WhatsApp:', err);
+        console.error('⚠️ Error en notificación al staff:', err);
       }
     }
 
     // ----------------------------------------------------------------
-    // 6) Registrar evento detallado (mensajes en subcolección)
-    //    ⚠️ Importante: NO le pasamos rawPayload para que NO sobreescriba metadata.
+    // 6) Logs Detallados (opcional, en segundo plano)
     // ----------------------------------------------------------------
     try {
-      const logCtx: BotContext = {
-        ...ctx,
-        metadata: newMetadata,
-        previousState
-      };
-      await logConversationEvent(logCtx, botResponse);
+      const logCtx: BotContext = { ...ctx, metadata: newMetadata, previousState };
+      // No usamos await para no bloquear la respuesta a Meta
+      logConversationEvent(logCtx, botResponse).catch(e => console.error(e));
     } catch (err) {
-      console.error('⚠️ Error en logConversationEvent:', err);
+      console.error(err);
     }
 
     // ----------------------------------------------------------------
-    // 7) Enviar respuesta al cliente por WhatsApp Cloud API
+    // 7) Enviar Respuesta al Usuario (WhatsApp Cloud API)
     // ----------------------------------------------------------------
     try {
-      if (!whatsappCfg.accessToken || !whatsappCfg.phoneNumberId) {
-        console.error('❌ Falta configuración de WhatsApp (accessToken/phoneNumberId)');
-      } else {
+      if (whatsappCfg.accessToken && whatsappCfg.phoneNumberId) {
         const url = `https://graph.facebook.com/v21.0/${whatsappCfg.phoneNumberId}/messages`;
-
         const headers = {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${whatsappCfg.accessToken}`
         };
 
-        // 7.1) Texto principal
-        const textPayload = {
-          messaging_product: 'whatsapp',
-          to: fromPhone,
-          type: 'text' as const,
-          text: {
-            body: botResponse.reply
-          }
-        };
-
-        const textRes = await fetch(url, {
+        // Enviar texto
+        await fetch(url, {
           method: 'POST',
           headers,
-          body: JSON.stringify(textPayload)
+          body: JSON.stringify({
+            messaging_product: 'whatsapp',
+            to: fromPhone,
+            type: 'text',
+            text: { body: botResponse.reply }
+          })
         });
 
-        if (!textRes.ok) {
-          const errBody = await textRes.text();
-          console.error('❌ Error enviando mensaje de texto a WhatsApp:', errBody);
-        } else {
-          console.log('✅ Mensaje de texto enviado a WhatsApp');
-        }
-
-        // 7.2) Media (imágenes de tortas)
+        // Enviar imágenes si las hay
         if (botResponse.media && botResponse.media.length > 0) {
           for (const m of botResponse.media) {
-            if (m.type !== 'image') continue;
-
-            const imagePayload = {
-              messaging_product: 'whatsapp',
-              to: fromPhone,
-              type: 'image' as const,
-              image: {
-                link: m.url,
-                caption: m.caption ?? ''
-              }
-            };
-
-            const imgRes = await fetch(url, {
-              method: 'POST',
-              headers,
-              body: JSON.stringify(imagePayload)
-            });
-
-            if (!imgRes.ok) {
-              const errBody = await imgRes.text();
-              console.error('❌ Error enviando imagen a WhatsApp:', errBody);
-            } else {
-              console.log('✅ Imagen enviada a WhatsApp');
+            if (m.type === 'image') {
+              await fetch(url, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                  messaging_product: 'whatsapp',
+                  to: fromPhone,
+                  type: 'image',
+                  image: { link: m.url, caption: m.caption ?? '' }
+                })
+              });
             }
           }
         }
       }
     } catch (e) {
-      console.error('❌ Error de red con WhatsApp Cloud API:', e);
+      console.error('❌ Error de red con WhatsApp API:', e);
     }
 
     // ----------------------------------------------------------------
-    // 8) Responder a Meta rápido
+    // 8) Responder OK a Meta
     // ----------------------------------------------------------------
-    return json({
-      ok: true,
-      handled: true,
-      replyPreview: botResponse.reply
-    });
+    return json({ ok: true });
+
   } catch (err) {
-    console.error('❌ Error general en webhook de WhatsApp:', err);
+    console.error('❌ Error general en webhook:', err);
     return json({ ok: false, error: 'internal_error' }, { status: 500 });
   }
 };
