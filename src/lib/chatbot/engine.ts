@@ -65,7 +65,6 @@ export function detectIntent(text: string, previousState?: string | null): Inten
   return { id: 'fallback', confidence: 0.3, reason: 'Fallback' };
 }
 
-// ⚠️ CAMBIO: Ahora es async porque llama a buildProductOrderResponse
 async function buildReply(intent: IntentMatch, ctx: BotContext): Promise<BotResponse> {
   const isWhatsApp = ctx.channel === 'whatsapp';
   const settings = ((ctx.metadata?.settings ?? {}) as any);
@@ -85,7 +84,6 @@ async function buildReply(intent: IntentMatch, ctx: BotContext): Promise<BotResp
       // Intentamos detectar producto en el texto inicial si no usó IA
       const prod = buscarProductoPorTexto(ctx.text);
       const draft: OrderDraft = { producto: prod ? prod.nombre : null };
-      // ⚠️ CAMBIO: await aquí
       return await buildProductOrderResponse(prod, draft, ctx, intent, lineBreak);
     case 'faq_menu':
       reply = `Te comparto nuestro menú 🍰\n\n${buildMenuResumen(4)}\n\n¿Cuál te gustaría?`;
@@ -96,7 +94,9 @@ async function buildReply(intent: IntentMatch, ctx: BotContext): Promise<BotResp
       reply = `Horarios:\nL-V: ${h.weekdays}\nSáb: ${h.saturday}`;
       break;
     case 'handoff_human':
-      reply = settings.messages?.handoff ?? 'Te derivo con un humano.';
+      // Atención proactiva: notificamos y prometemos contacto
+      reply = settings.messages?.handoff ?? 
+        `Entendido. He notificado a un ejecutivo del equipo 👤.\n\nTe contactaremos por este mismo chat a la brevedad para ayudarte.`;
       needsHuman = true;
       nextState = 'handoff_requested';
       break;
@@ -105,7 +105,6 @@ async function buildReply(intent: IntentMatch, ctx: BotContext): Promise<BotResp
       const prodFallback = buscarProductoPorTexto(ctx.text);
       if (prodFallback) {
          const draftFallback: OrderDraft = { producto: prodFallback.nombre };
-         // ⚠️ CAMBIO: await aquí
          return await buildProductOrderResponse(prodFallback, draftFallback, ctx, intent, lineBreak);
       }
       reply = 'No entendí bien. ¿Podrías repetirlo o decir "Quiero hacer un pedido"?';
@@ -126,7 +125,6 @@ export async function processMessage(ctx: BotContext): Promise<BotResponse> {
   const simpleIntents: IntentId[] = ['greeting', 'goodbye', 'faq_hours'];
 
   if (ruleIntent.confidence >= 0.85 && simpleIntents.includes(ruleIntent.id)) {
-    // ⚠️ CAMBIO: await aquí
     return await buildReply(ruleIntent, ctx);
   }
 
@@ -138,21 +136,41 @@ export async function processMessage(ctx: BotContext): Promise<BotResponse> {
   }
 
   if (aiResult && aiResult.intentId) {
+    // =================================================================
+    // 🛡️ VALIDACIÓN ANTI-FANTASMAS (Solución al bug de "Mango")
+    // =================================================================
+    // Si la IA detecta un producto (ej: "mango") que NO está en el catálogo,
+    // y el usuario NO escribió esa palabra en su mensaje actual, es porque
+    // la IA está leyendo el historial antiguo. Lo borramos.
+    if (aiResult.slots?.producto) {
+      const exists = buscarProductoPorTexto(aiResult.slots.producto);
+      if (!exists) {
+        const textNorm = normalize(ctx.text);
+        const productNorm = normalize(aiResult.slots.producto);
+        // Buscamos si alguna palabra clave del producto está en el texto actual
+        // Ignoramos palabras comunes como 'torta'
+        const tokens = productNorm.split(' ').filter(t => t.length > 3 && !['torta', 'pastel'].includes(t));
+        const mentioned = tokens.some(t => textNorm.includes(t));
+
+        if (!mentioned) {
+          // Es un fantasma del historial -> Borrar
+          delete aiResult.slots.producto;
+        }
+      }
+    }
+    // =================================================================
+
     const intent: IntentMatch = { id: aiResult.intentId, confidence: 0.9, reason: 'AI' };
     
-    // Si es pedido, usamos la lógica compleja
     if (intent.id === 'order_start' || aiResult.slots?.producto || ctx.previousState === 'collecting_order_details') {
       intent.id = 'order_start';
       
       const prevDraft = ((ctx.metadata ?? {}) as any).orderDraft as OrderDraft | undefined;
       const mergedDraft = mergeOrderDraft(prevDraft, aiResult.slots, ctx);
       
-      // Buscamos el producto en catálogo
       const producto = buscarProductoPorTexto(mergedDraft.producto || '');
-      
       const lineBreak = ctx.channel === 'whatsapp' ? '\n' : '\n';
       
-      // ⚠️ CAMBIO: await aquí (crítico para geolocalización)
       return await buildProductOrderResponse(
         producto, 
         mergedDraft, 
@@ -163,7 +181,6 @@ export async function processMessage(ctx: BotContext): Promise<BotResponse> {
       );
     }
 
-    // ⚠️ CAMBIO: await aquí
     const response = await buildReply(intent, ctx);
     if (aiResult.needsHuman) {
       response.needsHuman = true;
@@ -172,6 +189,5 @@ export async function processMessage(ctx: BotContext): Promise<BotResponse> {
     return response;
   }
 
-  // ⚠️ CAMBIO: await aquí
   return await buildReply(ruleIntent, ctx);
 }
