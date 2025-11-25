@@ -40,7 +40,7 @@
     messages = [...messages, { from: 'user', text, ts: new Date() }];
 
     try {
-      const res = await fetch('/api/webhook', {
+      const res = await fetch('/api/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
