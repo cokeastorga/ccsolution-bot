@@ -51,17 +51,40 @@ export function detectIntent(text: string, previousState?: string | null): Inten
   const n = normalize(text);
   const hasAny = (kws: string[]) => kws.some((k) => n.includes(k));
 
+  // 1. Prioridad: Flujo de pedido activo
   if (previousState === 'collecting_order_details') {
     if (hasAny(['confirmar', 'listo', 'ok', 'si', 'esta bien'])) return { id: 'order_start', confidence: 0.95, reason: 'Flow' };
     return { id: 'order_start', confidence: 0.85, reason: 'Flow' };
   }
-  if (hasAny(['hola', 'buenas'])) return { id: 'greeting', confidence: 0.9, reason: 'Keyword' };
-  if (hasAny(['chau', 'adios', 'gracias'])) return { id: 'goodbye', confidence: 0.85, reason: 'Keyword' };
-  if (hasAny(['pedido', 'encargar', 'comprar', 'quiero una torta'])) return { id: 'order_start', confidence: 0.9, reason: 'Keyword' };
-  if (hasAny(['horario', 'abren', 'cierran'])) return { id: 'faq_hours', confidence: 0.9, reason: 'Keyword' };
-  if (hasAny(['menu', 'carta', 'catalogo', 'precios', 'que tortas tienen'])) return { id: 'faq_menu', confidence: 0.9, reason: 'Keyword' };
-  if (hasAny(['hablar con humano', 'persona'])) return { id: 'handoff_human', confidence: 0.95, reason: 'Keyword' };
 
+  // 2. Prioridad: ¿Es una consulta de producto "disfrazada" de saludo?
+  // Si el usuario dice "Hola tiene torta", NO debemos marcarlo como saludo, 
+  // sino dejar que pase a la IA (retornando fallback o confianza baja).
+  const palabrasDeContenido = [
+    'torta', 'pastel', 'kuchen', 'pie', 'dulce', 
+    'tiene', 'tienen', 'hay', 'quedan', 'stock',
+    'precio', 'valor', 'cuesta', 'sale',
+    'quiero', 'comprar', 'pedir', 'necesito', 'busco'
+  ];
+  
+  const tieneContenido = hasAny(palabrasDeContenido);
+
+  // 3. Reglas directas
+  if (hasAny(['horario', 'abren', 'cierran', 'atienden'])) return { id: 'faq_hours', confidence: 0.9, reason: 'Keyword' };
+  if (hasAny(['menu', 'carta', 'catalogo', 'precios', 'que tortas tienen', 'lista'])) return { id: 'faq_menu', confidence: 0.9, reason: 'Keyword' };
+  if (hasAny(['hablar con humano', 'persona', 'ejecutivo'])) return { id: 'handoff_human', confidence: 0.95, reason: 'Keyword' };
+  
+  // Intención de pedido explícita
+  if (hasAny(['pedido', 'encargar', 'hacer un pedido'])) return { id: 'order_start', confidence: 0.9, reason: 'Keyword' };
+
+  // 4. Saludo y Despedida (SOLO si no hay palabras de contenido)
+  if (!tieneContenido) {
+    if (hasAny(['hola', 'buenas', 'alo', 'holis'])) return { id: 'greeting', confidence: 0.9, reason: 'Keyword' };
+    if (hasAny(['chau', 'adios', 'gracias', 'hasta luego'])) return { id: 'goodbye', confidence: 0.85, reason: 'Keyword' };
+  }
+
+  // Si tiene palabras de contenido pero no calzó con reglas exactas, 
+  // retornamos fallback para forzar el uso de la IA (Gemini).
   return { id: 'fallback', confidence: 0.3, reason: 'Fallback' };
 }
 
@@ -94,14 +117,13 @@ async function buildReply(intent: IntentMatch, ctx: BotContext): Promise<BotResp
       reply = `Horarios:\nL-V: ${h.weekdays}\nSáb: ${h.saturday}`;
       break;
     case 'handoff_human':
-      // Atención proactiva: notificamos y prometemos contacto
       reply = settings.messages?.handoff ?? 
         `Entendido. He notificado a un ejecutivo del equipo 👤.\n\nTe contactaremos por este mismo chat a la brevedad para ayudarte.`;
       needsHuman = true;
       nextState = 'handoff_requested';
       break;
     default:
-      // Fallback: también revisamos si mencionó un producto
+      // Fallback: también revisamos si mencionó un producto aunque la intención no fuera clara
       const prodFallback = buscarProductoPorTexto(ctx.text);
       if (prodFallback) {
          const draftFallback: OrderDraft = { producto: prodFallback.nombre };
@@ -124,6 +146,7 @@ export async function processMessage(ctx: BotContext): Promise<BotResponse> {
   const ruleIntent = detectIntent(ctx.text, ctx.previousState);
   const simpleIntents: IntentId[] = ['greeting', 'goodbye', 'faq_hours'];
 
+  // Solo usamos la respuesta rápida si la confianza es alta Y NO es un caso ambiguo que requiera IA
   if (ruleIntent.confidence >= 0.85 && simpleIntents.includes(ruleIntent.id)) {
     return await buildReply(ruleIntent, ctx);
   }
@@ -139,16 +162,12 @@ export async function processMessage(ctx: BotContext): Promise<BotResponse> {
     // =================================================================
     // 🛡️ VALIDACIÓN ANTI-FANTASMAS (Solución al bug de "Mango")
     // =================================================================
-    // Si la IA detecta un producto (ej: "mango") que NO está en el catálogo,
-    // y el usuario NO escribió esa palabra en su mensaje actual, es porque
-    // la IA está leyendo el historial antiguo. Lo borramos.
     if (aiResult.slots?.producto) {
       const exists = buscarProductoPorTexto(aiResult.slots.producto);
       if (!exists) {
         const textNorm = normalize(ctx.text);
         const productNorm = normalize(aiResult.slots.producto);
-        // Buscamos si alguna palabra clave del producto está en el texto actual
-        // Ignoramos palabras comunes como 'torta'
+        // Filtramos palabras comunes para ver si el usuario realmente mencionó el producto
         const tokens = productNorm.split(' ').filter(t => t.length > 3 && !['torta', 'pastel'].includes(t));
         const mentioned = tokens.some(t => textNorm.includes(t));
 
