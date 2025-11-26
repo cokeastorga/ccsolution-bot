@@ -166,18 +166,14 @@ export function mergeOrderDraft(previous: OrderDraft | undefined, aiSlots: any, 
   if (posibleHora) draft.hora = posibleHora;
 
   // ---------------------------------------------------------
-  // ✅ CONFIRMACIÓN MEJORADA (Corrección del bucle "si")
+  // ✅ CONFIRMACIÓN MEJORADA
   // ---------------------------------------------------------
   const n = normalize(ctx.text);
-  
-  // Lista de palabras que indican confirmación
   const palabrasConfirmacion = [
     'si', 'sí', 'ok', 'listo', 'dale', 'bueno', 
     'correcto', 'perfecto', 'confirmo', 'esta bien', 'está bien'
   ];
 
-  // Verificamos si alguna palabra de confirmación está presente
-  // Aceptamos "si", "si gracias", "ok dale", etc.
   const esConfirmacion = palabrasConfirmacion.some(kw => 
     n === kw || n.startsWith(kw + ' ') || n.includes(' ' + kw)
   );
@@ -185,7 +181,6 @@ export function mergeOrderDraft(previous: OrderDraft | undefined, aiSlots: any, 
   if (esConfirmacion) {
     draft.confirmado = true;
   }
-  // ---------------------------------------------------------
 
   // Dirección (Contexto)
   const keywordsDireccion = ['av ', 'calle', 'pasaje', 'condominio', 'villa', 'poblacion', 'sector', 'block', 'depto'];
@@ -196,7 +191,7 @@ export function mergeOrderDraft(previous: OrderDraft | undefined, aiSlots: any, 
     !draft.direccion && 
     ctx.text.length > 3 &&
     !draft.confirmado &&
-    !esConfirmacion && // Usamos la variable calculada arriba
+    !esConfirmacion && 
     !['no', 'gracias'].includes(n);
 
   if (!draft.direccion && (hasKeyword || isContextualAddress)) {
@@ -376,6 +371,8 @@ export async function buildProductOrderResponse(
     intent,
     nextState: 'handoff_requested',
     needsHuman: true,
-    meta: baseMeta
+    meta: baseMeta,
+    // 🆕 IMPORTANTE: Limpiamos la memoria tras cerrar el pedido
+    shouldClearMemory: true 
   };
 }

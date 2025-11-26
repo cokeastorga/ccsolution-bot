@@ -17,9 +17,6 @@ import {
   serverTimestamp
 } from 'firebase/firestore';
 
-/**
- * Estructura mínima de la conversación en Firestore.
- */
 type HistoryItem = {
   from: 'user' | 'bot';
   text: string;
@@ -34,6 +31,7 @@ type ConversationDoc = {
   userId?: string;
   createdAt?: unknown;
   updatedAt?: unknown;
+  lastMessageAt?: any;
 };
 
 // GET → Verificación del webhook
@@ -61,13 +59,9 @@ export const POST: RequestHandler = async ({ request }) => {
     return json({ ok: false, error: 'Invalid JSON' }, { status: 400 });
   }
 
-  // Config global
   const settings = await getGlobalSettings();
   const whatsappCfg = settings.whatsapp;
 
-  // ----------------------------------------------------------------
-  // 1) Parsear payload de WhatsApp
-  // ----------------------------------------------------------------
   try {
     const entry = body.entry?.[0];
     const change = entry?.changes?.[0];
@@ -92,9 +86,7 @@ export const POST: RequestHandler = async ({ request }) => {
       return json({ ok: true, ignored: 'Empty text' });
     }
 
-    // ----------------------------------------------------------------
-    // 2) Cargar / Crear Conversación en Firestore
-    // ----------------------------------------------------------------
+    // 2) Cargar / Crear Conversación
     const channel: Channel = 'whatsapp';
     const conversationId = `wa:${fromPhone}`;
 
@@ -119,13 +111,37 @@ export const POST: RequestHandler = async ({ request }) => {
       convData = (convSnap.data() as ConversationDoc) || {};
     }
 
-    const previousState = convData.state ?? null;
-    const previousMetadata = convData.metadata ?? {};
+    // ==================================================================================
+    // 🔴 LÓGICA TIMEOUT (5 MINUTOS)
+    // ==================================================================================
+    const TIMEOUT_MS = 5 * 60 * 1000;
+    const now = Date.now();
+    
+    // Intentar obtener la fecha en milisegundos
+    const lastMsgTime = convData.lastMessageAt?.toMillis 
+      ? convData.lastMessageAt.toMillis() 
+      : (convData.updatedAt?.toMillis ? convData.updatedAt.toMillis() : now);
+
+    let previousState = convData.state ?? null;
+    let previousMetadata = convData.metadata ?? {};
+
+    if (now - lastMsgTime > TIMEOUT_MS) {
+      console.log(`⏱️ Sesión expirada para ${conversationId}. Limpiando memoria de atención.`);
+      
+      previousState = null;
+      previousMetadata = {
+        ...previousMetadata,
+        orderDraft: null,
+        aiSlots: null,
+        aiGeneratedReply: null
+        // Se mantienen campos administrativos como 'wa', 'settings', etc.
+      };
+    }
+    // ==================================================================================
+
     const history: HistoryItem[] = (convData.history ?? []).slice(-40);
 
-    // ----------------------------------------------------------------
-    // 3) Motor del Chatbot (IA + Lógica)
-    // ----------------------------------------------------------------
+    // 3) Motor del Chatbot
     const ctx: BotContext = {
       conversationId,
       userId: fromPhone,
@@ -142,22 +158,36 @@ export const POST: RequestHandler = async ({ request }) => {
 
     const botResponse = await processMessage(ctx);
 
-    // ----------------------------------------------------------------
-    // 4) Actualizar Firestore
-    // ----------------------------------------------------------------
     const newHistory: HistoryItem[] = [
       ...history,
       { from: 'user', text, ts: Date.now() },
       { from: 'bot', text: botResponse.reply, ts: Date.now() }
     ].slice(-40);
 
+    // ----------------------------------------------------------------
+    // 🔴 LÓGICA LIMPIEZA PROACTIVA POR FIN DE FLUJO
+    // ----------------------------------------------------------------
     const newMetadata: Record<string, unknown> = {
       ...previousMetadata,
       ...(botResponse.meta ?? {})
     };
 
+    let nextStateToSave = botResponse.nextState ?? previousState ?? null;
+
+    if (botResponse.shouldClearMemory) {
+      console.log(`🧹 Limpiando memoria por fin de flujo (Pedido/Info) para ${conversationId}.`);
+      
+      newMetadata.orderDraft = null;
+      newMetadata.aiSlots = null;
+      newMetadata.aiGeneratedReply = null;
+      
+      // Reseteamos el estado para la próxima vez
+      nextStateToSave = null;
+    }
+    // ----------------------------------------------------------------
+
     await updateDoc(convRef, {
-      state: botResponse.nextState ?? previousState ?? null,
+      state: nextStateToSave,
       metadata: newMetadata,
       history: newHistory,
       channel,
@@ -169,19 +199,14 @@ export const POST: RequestHandler = async ({ request }) => {
       status: botResponse.needsHuman ? 'pending' : 'open'
     });
 
-    // ----------------------------------------------------------------
-    // 5) NOTIFICACIÓN AL STAFF (ATENCIÓN PROACTIVA)
-    //    Si needsHuman es true, avisamos al equipo con link directo.
-    // ----------------------------------------------------------------
+    // 5) Notificación staff (si corresponde)
     if (botResponse.needsHuman) {
-      
       const orderDraft = (botResponse.meta as any)?.orderDraft;
 
-      // 5.1) Si es un pedido, guardarlo en la colección /orders
+      // Guardar pedido en colección aparte si existe
       if (orderDraft) {
         const orderId = `${conversationId}-${Date.now()}`;
         const orderRef = doc(db, 'orders', orderId);
-
         await setDoc(orderRef, {
           conversationId,
           userId: fromPhone,
@@ -189,92 +214,59 @@ export const POST: RequestHandler = async ({ request }) => {
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
           status: 'pending',
-          draft: orderDraft,
-          resumen: {
-            producto: orderDraft.producto ?? null,
-            personas: orderDraft.personas ?? null,
-            fecha: orderDraft.fechaIso ?? null,
-            // ... otros campos útiles
-          }
+          draft: orderDraft
         });
-        console.log('📦 Pedido guardado:', orderId);
       }
 
-      // 5.2) Enviar WhatsApp al Staff
+      // Enviar WhatsApp a admins
       try {
         const notifyPhones = (whatsappCfg.notificationPhones ?? '')
           .split(',')
           .map((p: string) => p.trim())
           .filter(Boolean);
 
-        if (
-          notifyPhones.length > 0 &&
-          whatsappCfg.accessToken &&
-          whatsappCfg.phoneNumberId
-        ) {
+        if (notifyPhones.length > 0 && whatsappCfg.accessToken && whatsappCfg.phoneNumberId) {
           const adminUrl = `https://graph.facebook.com/v21.0/${whatsappCfg.phoneNumberId}/messages`;
           const adminHeaders = {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${whatsappCfg.accessToken}`
           };
 
-          // Construir el mensaje para el Staff
           let staffMessageBody = '';
-
           if (orderDraft) {
-            // Caso: Pedido Nuevo
-            staffMessageBody = 
-              `📦 *NUEVO PEDIDO CONFIRMADO*\n\n` +
-              `Cliente: ${fromPhone}\n` +
-              `Detalles:\n${botResponse.reply}\n\n` + // Usamos la respuesta del bot como resumen
-              `👉 *Haz clic aquí para responderle:* https://wa.me/${fromPhone}`;
+            staffMessageBody = `📦 *NUEVO PEDIDO*\nCliente: ${fromPhone}\n\n${botResponse.reply}`;
           } else {
-            // Caso: Solicitud de Ayuda General
-            staffMessageBody = 
-              `👤 *SOLICITUD DE ATENCIÓN HUMANA*\n\n` +
-              `El cliente ${fromPhone} pide hablar con alguien.\n` +
-              `Último mensaje: "${text}"\n\n` +
-              `👉 *Haz clic aquí para responderle:* https://wa.me/${fromPhone}`;
+            staffMessageBody = `👤 *SOLICITUD ATENCIÓN*\nCliente: ${fromPhone}\nMsg: "${text}"`;
           }
 
-          // Enviar a todos los números configurados
           for (const adminPhone of notifyPhones) {
-            if (adminPhone.length < 8) continue; // Validación básica
-
-            const adminPayload = {
-              messaging_product: 'whatsapp',
-              to: adminPhone,
-              type: 'text' as const,
-              text: { body: staffMessageBody }
-            };
-
+            if (adminPhone.length < 8) continue;
             await fetch(adminUrl, {
               method: 'POST',
               headers: adminHeaders,
-              body: JSON.stringify(adminPayload)
-            }).catch(err => console.error(`Error notificando a ${adminPhone}:`, err));
+              body: JSON.stringify({
+                messaging_product: 'whatsapp',
+                to: adminPhone,
+                type: 'text',
+                text: { body: staffMessageBody }
+              })
+            }).catch(e => console.error(e));
           }
-          console.log('🔔 Staff notificado (Proactive Attention).');
         }
       } catch (err) {
-        console.error('⚠️ Error en notificación al staff:', err);
+        console.error('Error notificando staff:', err);
       }
     }
 
-    // ----------------------------------------------------------------
-    // 6) Logs Detallados (opcional, en segundo plano)
-    // ----------------------------------------------------------------
+    // 6) Logs
     try {
       const logCtx: BotContext = { ...ctx, metadata: newMetadata, previousState };
-      // No usamos await para no bloquear la respuesta a Meta
       logConversationEvent(logCtx, botResponse).catch(e => console.error(e));
     } catch (err) {
       console.error(err);
     }
 
-    // ----------------------------------------------------------------
-    // 7) Enviar Respuesta al Usuario (WhatsApp Cloud API)
-    // ----------------------------------------------------------------
+    // 7) Enviar respuesta al usuario
     try {
       if (whatsappCfg.accessToken && whatsappCfg.phoneNumberId) {
         const url = `https://graph.facebook.com/v21.0/${whatsappCfg.phoneNumberId}/messages`;
@@ -283,7 +275,6 @@ export const POST: RequestHandler = async ({ request }) => {
           Authorization: `Bearer ${whatsappCfg.accessToken}`
         };
 
-        // Enviar texto
         await fetch(url, {
           method: 'POST',
           headers,
@@ -295,7 +286,6 @@ export const POST: RequestHandler = async ({ request }) => {
           })
         });
 
-        // Enviar imágenes si las hay
         if (botResponse.media && botResponse.media.length > 0) {
           for (const m of botResponse.media) {
             if (m.type === 'image') {
@@ -314,16 +304,13 @@ export const POST: RequestHandler = async ({ request }) => {
         }
       }
     } catch (e) {
-      console.error('❌ Error de red con WhatsApp API:', e);
+      console.error('❌ Error enviando a WhatsApp:', e);
     }
 
-    // ----------------------------------------------------------------
-    // 8) Responder OK a Meta
-    // ----------------------------------------------------------------
     return json({ ok: true });
 
   } catch (err) {
-    console.error('❌ Error general en webhook:', err);
+    console.error('❌ Error webhook:', err);
     return json({ ok: false, error: 'internal_error' }, { status: 500 });
   }
 };
