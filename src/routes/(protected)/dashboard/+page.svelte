@@ -1,4 +1,14 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+  import { db } from '$lib/firebase';
+  import { 
+    collection, 
+    query, 
+    orderBy, 
+    limit, 
+    onSnapshot, 
+    Timestamp 
+  } from 'firebase/firestore';
   import StatCard from '$lib/components/StatCard.svelte';
 
   type Trend = 'up' | 'down' | 'flat';
@@ -23,78 +33,19 @@
     hasUnread: boolean;
   };
 
-  const stats: StatCardData[] = [
-    {
-      label: 'Conversaciones de hoy',
-      value: '32',
-      helper: '+8 vs ayer',
-      trend: 'up'
-    },
-    {
-      label: 'Usuarios activos',
-      value: '14',
-      helper: 'En las últimas 2 horas',
-      trend: 'flat'
-    },
-    {
-      label: 'Mensajes automáticos enviados',
-      value: '87',
-      helper: 'Plantillas y respuestas rápidas',
-      trend: 'up'
-    },
-    {
-      label: 'Pedidos recibidos',
-      value: '5',
-      helper: 'A través del chatbot',
-      trend: 'down'
-    }
-  ];
-
-  const conversations: ConversationRow[] = [
-    {
-      id: 'C-2301',
-      userName: 'Juan Pérez',
-      channel: 'WhatsApp',
-      intent: 'Pedido de kuchen',
-      status: 'open',
-      updatedAt: 'Hoy · 02:03',
-      messages: 14,
-      hasUnread: true
-    },
-    {
-      id: 'C-2298',
-      userName: 'María López',
-      channel: 'Web',
-      intent: 'Consulta de horarios',
-      status: 'closed',
-      updatedAt: 'Hoy · 01:34',
-      messages: 6,
-      hasUnread: false
-    },
-    {
-      id: 'C-2291',
-      userName: 'Cliente nuevo',
-      channel: 'WhatsApp',
-      intent: 'Menú del día',
-      status: 'pending',
-      updatedAt: 'Ayer · 23:51',
-      messages: 3,
-      hasUnread: true
-    },
-    {
-      id: 'C-2285',
-      userName: 'Carlos Díaz',
-      channel: 'Web',
-      intent: 'Hablar con humano',
-      status: 'open',
-      updatedAt: 'Ayer · 22:17',
-      messages: 11,
-      hasUnread: false
-    }
-  ];
-
+  // Estado local
+  let conversations: ConversationRow[] = [];
+  let loading = true;
   let searchQuery = '';
   let statusFilter: 'all' | ConversationStatus = 'all';
+
+  // Estadísticas iniciales (se actualizarán con los datos reales)
+  let stats: StatCardData[] = [
+    { label: 'Conversaciones de hoy', value: '-', helper: 'Cargando...', trend: 'flat' },
+    { label: 'Requieren humano', value: '-', helper: 'Pendientes de atención', trend: 'flat' },
+    { label: 'Pedidos detectados', value: '-', helper: 'Intención de compra', trend: 'flat' },
+    { label: 'Total visualizado', value: '-', helper: 'Últimos registros', trend: 'flat' }
+  ];
 
   const statusLabel: Record<'all' | ConversationStatus, string> = {
     all: 'Todas',
@@ -109,31 +60,116 @@
     closed: 'bg-slate-50 text-slate-600 border-slate-200'
   };
 
+  // Helper para formatear fechas de Firestore
+  function formatDate(timestamp: any): string {
+    if (!timestamp?.toDate) return '—';
+    const date = timestamp.toDate();
+    const now = new Date();
+    
+    // Verificar si es hoy
+    const isToday = date.getDate() === now.getDate() && 
+                    date.getMonth() === now.getMonth() && 
+                    date.getFullYear() === now.getFullYear();
+    
+    const timeStr = date.toLocaleTimeString('es-CL', { hour: '2-digit', minute: '2-digit' });
+
+    if (isToday) return `Hoy · ${timeStr}`;
+    
+    return date.toLocaleDateString('es-CL', { day: '2-digit', month: '2-digit' }) + ' · ' + timeStr;
+  }
+
+  onMount(() => {
+    // Consultamos las últimas 50 conversaciones ordenadas por fecha
+    const q = query(
+      collection(db, 'conversations'),
+      orderBy('updatedAt', 'desc'),
+      limit(50)
+    );
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const docs = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+      // 1. Mapear datos para la tabla
+      conversations = docs.map((d: any) => ({
+        id: d.id,
+        userName: d.userId || 'Usuario Web',
+        channel: d.channel === 'whatsapp' ? 'WhatsApp' : 'Web',
+        intent: d.lastIntentId || 'Sin intención',
+        status: (d.status as ConversationStatus) || 'open',
+        updatedAt: formatDate(d.updatedAt),
+        messages: Array.isArray(d.history) ? d.history.length : 0,
+        hasUnread: d.needsHuman // Usamos "needsHuman" como indicador visual de atención
+      }));
+
+      // 2. Calcular estadísticas en tiempo real sobre estos datos
+      const now = new Date();
+      const startOfDay = new Date(now.setHours(0,0,0,0));
+
+      const todayCount = docs.filter((d: any) => d.updatedAt?.toDate() >= startOfDay).length;
+      const pendingCount = docs.filter((d: any) => d.needsHuman).length;
+      const ordersCount = docs.filter((d: any) => d.lastIntentId === 'order_start').length;
+
+      stats = [
+        {
+          label: 'Conversaciones de hoy',
+          value: todayCount.toString(),
+          helper: 'Últimas 24 hrs',
+          trend: 'up'
+        },
+        {
+          label: 'Requieren humano',
+          value: pendingCount.toString(),
+          helper: 'Solicitudes o pedidos por confirmar',
+          // Usamos 'down' (color rojo) para alertar si hay pendientes, o 'flat' si es 0
+          trend: pendingCount > 0 ? 'down' : 'flat'
+        },
+        {
+          label: 'Pedidos detectados',
+          value: ordersCount.toString(),
+          helper: 'En esta lista reciente',
+          trend: 'up'
+        },
+        {
+          label: 'Conversaciones activas',
+          value: docs.filter((d: any) => d.status === 'open').length.toString(),
+          helper: 'Estado "Abierto"',
+          trend: 'flat'
+        }
+      ];
+
+      loading = false;
+    }, (error) => {
+      console.error("Error cargando dashboard:", error);
+      loading = false;
+    });
+
+    return () => unsubscribe();
+  });
+
+  // Filtro reactivo para la tabla
   $: filteredConversations = conversations.filter((c) => {
     const matchesStatus = statusFilter === 'all' || c.status === statusFilter;
-    const query = searchQuery.trim().toLowerCase();
+    const q = searchQuery.trim().toLowerCase();
     const matchesSearch =
-      query.length === 0 ||
-      c.userName.toLowerCase().includes(query) ||
-      c.intent.toLowerCase().includes(query) ||
-      c.id.toLowerCase().includes(query);
+      q.length === 0 ||
+      c.userName.toLowerCase().includes(q) ||
+      c.intent.toLowerCase().includes(q) ||
+      c.id.toLowerCase().includes(q);
 
     return matchesStatus && matchesSearch;
   });
 </script>
 
 <div class="space-y-8">
-  <!-- Header del dashboard -->
   <section class="space-y-2">
     <h2 class="text-xl md:text-2xl font-semibold text-slate-900">
-      Resumen de hoy
+      Resumen en tiempo real
     </h2>
     <p class="text-sm text-slate-500">
       Visualiza de un vistazo la actividad de tu chatbot y las conversaciones más recientes.
     </p>
   </section>
 
-  <!-- Cards de estadísticas -->
   <section class="grid gap-4 md:gap-6 sm:grid-cols-2 xl:grid-cols-4">
     {#each stats as s}
       <StatCard
@@ -145,7 +181,6 @@
     {/each}
   </section>
 
-  <!-- Conversaciones recientes -->
   <section class="space-y-4">
     <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <div>
@@ -158,7 +193,6 @@
       </div>
 
       <div class="flex flex-wrap items-center gap-2">
-        <!-- Filtro de estado -->
         <div class="inline-flex rounded-full bg-slate-100 p-1 text-xs">
           {#each ['all', 'open', 'pending', 'closed'] as key}
             {@const k = key as 'all' | ConversationStatus}
@@ -176,7 +210,6 @@
           {/each}
         </div>
 
-        <!-- Buscador -->
         <div
           class="flex items-center rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-500 min-w-[180px]"
         >
@@ -200,7 +233,6 @@
       </div>
     </div>
 
-    <!-- Tabla / lista -->
     <div
       class="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
     >
@@ -212,8 +244,12 @@
         <div class="text-right">Acciones</div>
       </div>
 
-      {#if filteredConversations.length === 0}
-        <div class="px-4 py-6 text-sm text-slate-500">
+      {#if loading}
+        <div class="px-4 py-6 text-sm text-slate-500 text-center">
+          Cargando datos en tiempo real...
+        </div>
+      {:else if filteredConversations.length === 0}
+        <div class="px-4 py-6 text-sm text-slate-500 text-center">
           No se encontraron conversaciones con esos filtros.
         </div>
       {:else}
@@ -222,9 +258,7 @@
             <li
               class="px-4 py-3 md:py-2.5 hover:bg-slate-50/80 transition-colors text-sm md:text-[13px]"
             >
-              <!-- Vista desktop: fila tipo tabla -->
               <div class="hidden md:grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_110px_120px_90px] gap-3 items-center">
-                <!-- Cliente -->
                 <div class="flex items-center gap-2 min-w-0">
                   <div
                     class="flex h-8 w-8 items-center justify-center rounded-full bg-slate-900 text-xs font-semibold text-white"
@@ -243,19 +277,17 @@
                       </span>
                       <span>· {c.id}</span>
                       {#if c.hasUnread}
-                        <span class="inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500 ml-1"></span>
+                        <span class="inline-flex h-1.5 w-1.5 rounded-full bg-emerald-500 ml-1" title="Requiere atención"></span>
                       {/if}
                     </p>
                   </div>
                 </div>
 
-                <!-- Intención -->
                 <div class="min-w-0">
                   <p class="text-slate-800 truncate">{c.intent}</p>
-                  <p class="text-[11px] text-slate-400">Router: Detectado</p>
+                  <p class="text-[11px] text-slate-400">Detectado por IA</p>
                 </div>
 
-                <!-- Estado -->
                 <div>
                   <span
                     class={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${statusColor[c.status]}`}
@@ -270,7 +302,6 @@
                   </span>
                 </div>
 
-                <!-- Última actualización -->
                 <div class="text-[11px] text-slate-500">
                   {c.updatedAt}
                   <div class="text-[10px] text-slate-400">
@@ -278,24 +309,16 @@
                   </div>
                 </div>
 
-                <!-- Acciones -->
                 <div class="flex justify-end gap-1.5">
-                  <button
-                    type="button"
+                  <a
+                    href={`/conversaciones/${c.id}`}
                     class="inline-flex items-center rounded-full bg-slate-900 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-slate-800"
                   >
                     Ver
-                  </button>
-                  <button
-                    type="button"
-                    class="inline-flex items-center rounded-full border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
-                  >
-                    Más
-                  </button>
+                  </a>
                 </div>
               </div>
 
-              <!-- Vista mobile: tarjeta -->
               <div class="flex flex-col gap-2 md:hidden">
                 <div class="flex items-center gap-2">
                   <div
@@ -338,18 +361,12 @@
                 </p>
 
                 <div class="flex justify-end gap-1.5">
-                  <button
-                    type="button"
+                  <a
+                    href={`/conversaciones/${c.id}`}
                     class="inline-flex items-center rounded-full bg-slate-900 px-3 py-1.5 text-[11px] font-medium text-white hover:bg-slate-800"
                   >
                     Ver
-                  </button>
-                  <button
-                    type="button"
-                    class="inline-flex items-center rounded-full border border-slate-300 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
-                  >
-                    Más
-                  </button>
+                  </a>
                 </div>
               </div>
             </li>
