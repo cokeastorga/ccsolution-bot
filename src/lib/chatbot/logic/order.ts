@@ -107,31 +107,37 @@ function extractDateInfo(text: string): DateInfo | null {
   return null;
 }
 
-function formatFechaLabel(info: DateInfo | null): string | null {
-  if (!info) return null;
-  if (info.iso) {
-    const [y, m, d] = info.iso.split('-');
-    return `${d}-${m}-${y} (${info.raw})`;
-  }
-  return info.raw;
-}
-
 function extractTime(text: string): string | null {
   const n = normalize(text);
   
-  let match = /(\d{1,2})[:.](\d{2})/.exec(n);
-  if (match) {
-    const hh = parseInt(match[1], 10);
-    const mm = match[2];
+  // 1. Formato HH:MM (prioridad alta)
+  const matchColon = /(\d{1,2})[:.](\d{2})/.exec(n);
+  if (matchColon) {
+    const hh = parseInt(matchColon[1], 10);
+    const mm = matchColon[2];
     if (hh >= 0 && hh <= 23) return `${hh.toString().padStart(2, '0')}:${mm}`;
   }
 
-  match = /(\d{1,2})\s*(hrs|horas|h|pm|am|de la tarde|de la manana)?/.exec(n);
-  if (match) {
+  // 2. Formato con palabras clave (hrs, pm, tarde) - Iterativo para saltar fechas
+  const re = /(\d{1,2})\s*(hrs|horas|h|pm|am|de la tarde|de la manana|de la mañana)/g;
+  let match;
+  
+  while ((match = re.exec(n)) !== null) {
     let hh = parseInt(match[1], 10);
-    const suffix = match[2] || '';
-    if ((suffix.includes('pm') || suffix.includes('tarde')) && hh < 12) hh += 12;
-    if (hh >= 0 && hh <= 23) return `${hh.toString().padStart(2, '0')}:00`;
+    const suffix = match[2];
+
+    if (hh >= 0 && hh <= 23) {
+      if ((suffix.includes('pm') || suffix.includes('tarde')) && hh < 12) hh += 12;
+      if ((suffix.includes('am') || suffix.includes('manana')) && hh === 12) hh = 0;
+      return `${hh.toString().padStart(2, '0')}:00`;
+    }
+  }
+
+  // 3. "a las X" (evita confundir "10 personas" con "10:00")
+  const matchAt = /a las\s*(\d{1,2})/.exec(n);
+  if (matchAt) {
+     const hh = parseInt(matchAt[1], 10);
+     if (hh >= 0 && hh <= 23) return `${hh.toString().padStart(2, '0')}:00`;
   }
 
   return null;
@@ -162,8 +168,12 @@ export function mergeOrderDraft(previous: OrderDraft | undefined, aiSlots: any, 
 
   // Fecha y Hora
   if (aiSlots?.fechaIso) draft.fechaIso = aiSlots.fechaIso;
+  
+  // Intentamos extraer hora del texto actual
   const posibleHora = extractTime(ctx.text);
-  if (posibleHora) draft.hora = posibleHora;
+  if (posibleHora) {
+    draft.hora = posibleHora;
+  }
 
   // ---------------------------------------------------------
   // ✅ CONFIRMACIÓN MEJORADA
@@ -183,7 +193,7 @@ export function mergeOrderDraft(previous: OrderDraft | undefined, aiSlots: any, 
   }
 
   // Dirección (Contexto)
-  const keywordsDireccion = ['av ', 'calle', 'pasaje', 'condominio', 'villa', 'poblacion', 'sector', 'block', 'depto'];
+  const keywordsDireccion = ['av ', 'calle', 'pasaje', 'condominio', 'villa', 'poblacion', 'sector', 'block', 'depto', 'cerca', 'frente'];
   const hasKeyword = keywordsDireccion.some(k => n.includes(k));
   
   const isContextualAddress = 
@@ -192,7 +202,7 @@ export function mergeOrderDraft(previous: OrderDraft | undefined, aiSlots: any, 
     ctx.text.length > 3 &&
     !draft.confirmado &&
     !esConfirmacion && 
-    !['no', 'gracias'].includes(n);
+    !['no', 'gracias', 'nada'].includes(n);
 
   if (!draft.direccion && (hasKeyword || isContextualAddress)) {
     draft.direccion = ctx.text.trim();
