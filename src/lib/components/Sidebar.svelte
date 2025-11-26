@@ -16,6 +16,11 @@
       icon: 'chat'
     },
     {
+      label: 'Sand Box',
+      href: '/sandbox/chat',
+      icon: 'chat'
+    },
+    {
       label: 'Usuarios',
       href: '/usuarios',
       icon: 'users'

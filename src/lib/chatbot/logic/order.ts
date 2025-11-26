@@ -367,7 +367,7 @@ export async function buildProductOrderResponse(
   // 9. Pedido Finalizado / Derivación
   const resumen = buildOrderSummary(draft);
   return {
-    reply: `¡Excelente! 🙌 Derivo tu pedido al equipo.\n\n${resumen}\n\n¡Gracias!`,
+    reply: `¡Excelente! 🙌 Derivo tu pedido al equipo.\n\n${resumen}\n\n¡Gracias!, Ahora un Humano se contactara contigo para confirmar tu pedido, Hasta Luego!`,
     intent,
     nextState: 'handoff_requested',
     needsHuman: true,

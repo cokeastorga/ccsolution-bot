@@ -114,7 +114,7 @@ Debes RESPONDER SIEMPRE SOLO un JSON VÁLIDO, sin texto adicional, con este form
     "freeText": "Quiere encargar una torta mil hojas para 20 personas con delivery"
   },
   "needsHuman": false,
-  "generatedReply": "Perfecto, anotamos una torta mil hojas para 20 personas con delivery. ¿Para qué día y a qué hora la necesitas?"
+  "generatedReply": "Perfecto, anotamos una torta mil hojas para 20 personas con retiro. ¿Para qué día, donde la quieres retirar y a qué hora la necesitas?"
 }
 `.trim();
 
