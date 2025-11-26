@@ -1,3 +1,4 @@
+// src/lib/chatbot/engine.ts
 import {
   buildMenuResumen,
   buscarProductoPorTexto,
@@ -68,7 +69,7 @@ export interface BotResponse {
     url: string;
     caption?: string;
   }>;
-  shouldClearMemory?: boolean; // 🆕 Bandera de limpieza
+  shouldClearMemory?: boolean; 
 }
 
 function normalize(text: string): string {
@@ -80,7 +81,7 @@ function normalize(text: string): string {
 }
 
 /**
- * Detección de intención por reglas (Mejorada)
+ * Detección de intención por reglas (Rápida)
  */
 export function detectIntent(
   text: string,
@@ -90,7 +91,7 @@ export function detectIntent(
   const hasAny = (keywords: string[]) =>
     keywords.some((k) => normalized.includes(k));
 
-  // 1. ESCAPE / SALIDA (Prioridad Máxima para salir de loops)
+  // 1. ESCAPE / SALIDA (Prioridad Máxima)
   if (hasAny(['chao', 'chau', 'adios', 'hasta luego', 'nos vemos', 'cancelar', 'salir', 'terminar', 'fin', 'cerrar'])) {
     return {
       id: 'goodbye',
@@ -108,7 +109,6 @@ export function detectIntent(
         reason: 'Confirmación de flujo'
       };
     }
-    // Si no es confirmación ni escape, asumimos que continúa dando detalles
     return {
       id: 'order_start',
       confidence: 0.85,
@@ -130,7 +130,7 @@ export function detectIntent(
     return { id: 'order_status', confidence: 0.9, reason: 'Consulta estado' };
   }
 
-  // Horarios y Ubicación (Mejorado)
+  // Horarios y Ubicación
   if (hasAny([
     'horario', 'abren', 'cierran', 'atienden', 'hora',
     'ubicacion', 'ubicados', 'donde estan', 'direccion', 'sucursales', 'sucursal', 'donde queda', 'local'
@@ -158,42 +158,44 @@ export function detectIntent(
   return { id: 'fallback', confidence: 0.3, reason: 'Fallback' };
 }
 
+/**
+ * Construye la respuesta final (Prioriza IA si existe)
+ */
 export async function buildReply(intent: IntentMatch, ctx: BotContext): Promise<BotResponse> {
   const locale = ctx.locale ?? 'es';
   const isWhatsApp = ctx.channel === 'whatsapp';
 
-  // Carga segura de settings
   const settings = (((ctx.metadata ?? {}) as any).settings ?? {}) as SettingsMeta;
   const businessName = settings.businessName ?? 'Delicias Porteñas';
   const lineBreak = isWhatsApp ? '\n' : '\n';
 
+  // 🧠 Recuperamos la respuesta generada por la IA (si existe)
+  const aiReply = (ctx.metadata as any)?.aiGeneratedReply as string | undefined;
+
   let reply = '';
   let nextState: string | null = ctx.previousState ?? null;
   let needsHuman = false;
-  let shouldClearMemory = false; // 🆕 Control de limpieza
+  let shouldClearMemory = false;
 
   switch (intent.id) {
     case 'greeting': {
-      if (settings.messages?.welcome) {
-        reply = settings.messages.welcome;
+      // Si la IA generó un saludo, úsalo. Si no, usa el del backend.
+      if (aiReply) {
+        reply = aiReply;
       } else {
-        reply =
-          `¡Hola! 👋 Soy Edu, el asistente virtual de ${businessName}.` +
-          lineBreak +
-          `Puedo ayudarte a:` +
-          lineBreak +
-          `• Hacer un pedido 🍰` +
-          lineBreak +
-          `• Consultar horarios y ubicación 📍` +
-          lineBreak +
-          `• Ver nuestro catálogo`;
+        reply = settings.messages?.welcome ?? `¡Hola! 👋 Soy Edu, el asistente virtual de ${businessName}.`;
       }
       nextState = 'idle';
       break;
     }
 
     case 'smalltalk': {
-      reply = `Estoy aquí para ayudarte con tus pedidos. Puedes decir "Ver catálogo" o "Hacer un pedido". 😊`;
+      // Prioridad absoluta a la IA para charla casual
+      if (aiReply) {
+        reply = aiReply;
+      } else {
+        reply = `Estoy aquí para ayudarte con tus pedidos. Puedes decir "Ver catálogo" o "Hacer un pedido". 😊`;
+      }
       nextState = 'idle';
       break;
     }
@@ -201,59 +203,43 @@ export async function buildReply(intent: IntentMatch, ctx: BotContext): Promise<
     case 'order_start': {
       const producto = buscarProductoPorTexto(ctx.text);
       const draft: OrderDraft = { producto: producto ? producto.nombre : null };
-      // buildProductOrderResponse maneja su propio shouldClearMemory si confirma
-      return await buildProductOrderResponse(producto, draft, ctx, intent, lineBreak);
+      // Pasamos aiReply para que la lógica de pedidos pueda usarlo como intro
+      return await buildProductOrderResponse(producto, draft, ctx, intent, lineBreak, aiReply);
     }
 
     case 'order_status': {
       reply = `Para revisar el estado de tu pedido necesito algún dato de referencia (ej. número de pedido o nombre).`;
       nextState = 'awaiting_order_reference';
-      // No limpiamos memoria porque esperamos respuesta
       break;
     }
 
     case 'faq_hours': {
+      // Mantenemos respuesta "Backend" para datos duros (para evitar alucinaciones de la IA)
       const h = settings.hours ?? {};
       const wd = h.weekdays ?? '09:00 – 19:00';
       const sat = h.saturday ?? '10:00 – 19:00';
       const sun = h.sunday ?? 'Cerrado';
 
-      reply =
-        `🕒 *Horarios de Atención:*` +
-        lineBreak +
-        `• Lunes a Viernes: ${wd}` +
-        lineBreak +
-        `• Sábados: ${sat}` +
-        lineBreak +
-        `• Domingos: ${sun}` +
-        lineBreak + lineBreak +
-        `📍 *Ubicación:*` +
-        lineBreak +
-        `Tenemos sucursales en Santiago. Si inicias un pedido con "retiro", te ayudaré a encontrar la más cercana a tu dirección.`;
+      // Si la IA dio una respuesta muy buena, úsala, sino, usa la plantilla segura
+      if (aiReply && aiReply.length > 20) {
+         reply = aiReply;
+      } else {
+         reply = `🕒 *Horarios de Atención:*\n• Lunes a Viernes: ${wd}\n• Sábados: ${sat}\n• Domingos: ${sun}`;
+      }
 
       nextState = ctx.previousState ?? 'idle';
-
-      // Si consulta esto y NO estaba pidiendo, limpiamos para reiniciar
-      if (!ctx.previousState || ctx.previousState === 'idle') {
-        shouldClearMemory = true;
-      }
+      if (!ctx.previousState || ctx.previousState === 'idle') shouldClearMemory = true;
       break;
     }
 
     case 'faq_menu': {
       const resumen = buildMenuResumen(4);
-      reply =
-        `Aquí tienes algunas de nuestras tortas favoritas 🍰\n\nPara mayor información o ver el catalogo completo de productos te recomiendo visitar "La tiendita porteña" en: https://www.deliciasportenas.cl/latiendita :` +
-        lineBreak + lineBreak +
-        resumen +
-        lineBreak + lineBreak +
-        `¿Te gustaría alguna? Solo escribe el nombre de la torta.`;
+      const intro = aiReply ? aiReply : `Aquí tienes algunas de nuestras tortas favoritas 🍰:`;
+      
+      reply = `${intro}${lineBreak}${lineBreak}${resumen}${lineBreak}${lineBreak}¿Te gustaría alguna? Solo escribe el nombre.`;
+      
       nextState = ctx.previousState ?? 'idle';
-
-      // Si consulta menú fuera de un pedido, limpiamos
-      if (!ctx.previousState || ctx.previousState === 'idle') {
-        shouldClearMemory = true;
-      }
+      if (!ctx.previousState || ctx.previousState === 'idle') shouldClearMemory = true;
       break;
     }
 
@@ -265,23 +251,26 @@ export async function buildReply(intent: IntentMatch, ctx: BotContext): Promise<
     }
 
     case 'goodbye': {
-      reply = settings.messages?.closing ?? `¡Gracias! 👋 Que tengas un excelente día.`;
+      reply = aiReply ? aiReply : (settings.messages?.closing ?? `¡Gracias! 👋 Que tengas un excelente día.`);
       nextState = 'ended';
-      // Despedida = Limpieza total
       shouldClearMemory = true;
       break;
     }
 
     case 'fallback':
     default: {
-      // Intentamos ver si mencionó un producto aunque no haya intent claro
       const producto = buscarProductoPorTexto(ctx.text);
       if (producto) {
         const draft: OrderDraft = { producto: producto.nombre };
-        return await buildProductOrderResponse(producto, draft, ctx, intent, lineBreak);
+        return await buildProductOrderResponse(producto, draft, ctx, intent, lineBreak, aiReply);
       }
 
-      reply = `No estoy seguro de entender 🤔. Puedes probar diciendo "Ver el menú", "Horarios" o "Quiero pedir una torta".`;
+      // Si no entendemos y la IA generó algo, úsalo (Edu intentando explicar)
+      if (aiReply) {
+        reply = aiReply;
+      } else {
+        reply = `No estoy seguro de entender 🤔. Puedes probar diciendo "Ver el menú", "Horarios" o "Quiero pedir una torta".`;
+      }
       nextState = ctx.previousState ?? 'idle';
       break;
     }
@@ -304,14 +293,17 @@ export async function buildReply(intent: IntentMatch, ctx: BotContext): Promise<
 export async function processMessage(ctx: BotContext): Promise<BotResponse> {
   const ruleIntent = detectIntent(ctx.text, ctx.previousState);
 
-  // Intents básicos por reglas
-  const simpleIntents: IntentId[] = ['greeting', 'goodbye', 'faq_hours', 'order_status', 'handoff_human'];
+  // 🔴 LISTA DE INTENTS QUE NO USAN IA (Solo Reglas)
+  // He quitado 'greeting' de aquí para que "Hola" pase a la IA y responda Edu.
+  // He dejado solo los críticos o de salida rápida.
+  const simpleIntents: IntentId[] = ['goodbye', 'handoff_human']; 
 
-  if (ruleIntent.confidence >= 0.85 && simpleIntents.includes(ruleIntent.id)) {
+  // Si es un intent simple y la confianza es muy alta, respondemos rápido
+  if (ruleIntent.confidence >= 0.95 && simpleIntents.includes(ruleIntent.id)) {
     return await buildReply(ruleIntent, ctx);
   }
 
-  // Uso de IA
+  // Para todo lo demás, consultamos a la IA (Gemini)
   let aiResult: AiNLUResult | null = null;
   try {
     aiResult = await aiUnderstand(ctx, ruleIntent.id);
@@ -339,7 +331,7 @@ export async function processMessage(ctx: BotContext): Promise<BotResponse> {
         ...(ctx.metadata ?? {}),
         aiSlots: aiResult.slots,
         aiNeedsHuman: aiResult.needsHuman ?? false,
-        aiGeneratedReply: aiResult.generatedReply,
+        aiGeneratedReply: aiResult.generatedReply, // Guardamos la respuesta de Edu
         orderDraft: mergedDraft
       }
     };
@@ -366,6 +358,6 @@ export async function processMessage(ctx: BotContext): Promise<BotResponse> {
     return response;
   }
 
-  // Fallback final
+  // Fallback si falla la IA
   return await buildReply(ruleIntent, ctx);
 }
